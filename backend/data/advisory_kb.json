@@ -1,0 +1,98 @@
+[
+  {
+    "id": "spraying_rain_general",
+    "crop": "general",
+    "keywords": ["spray", "pesticide", "spraying", "insecticide", "fungicide"],
+    "trigger": {
+      "field": "rain_probability",
+      "operator": ">",
+      "value": 50
+    },
+    "advisory": "Consider postponing chemical spraying when rain is likely soon (>50% probability) to prevent wash-off and chemical runoff.",
+    "region": "India"
+  },
+  {
+    "id": "rice_irrigation_rain",
+    "crop": "rice",
+    "keywords": ["rice", "paddy", "irrigation", "irrigate", "water", "sowing"],
+    "trigger": {
+      "field": "rain_probability",
+      "operator": ">",
+      "value": 60
+    },
+    "advisory": "Hold off on supplemental irrigation for paddy fields as substantial rainfall (>60% probability) is expected, saving energy and water.",
+    "region": "India"
+  },
+  {
+    "id": "wheat_heat_stress",
+    "crop": "wheat",
+    "keywords": ["wheat", "grain", "heat", "temperature"],
+    "trigger": {
+      "field": "temperature_c",
+      "operator": ">",
+      "value": 32
+    },
+    "advisory": "High daytime temperatures (>32°C) can cause terminal heat stress during grain development. Ensure light irrigation to maintain soil coolness.",
+    "region": "India"
+  },
+  {
+    "id": "cotton_wind_damage",
+    "crop": "cotton",
+    "keywords": ["cotton", "boll", "wind", "spray"],
+    "trigger": {
+      "field": "wind_kmh",
+      "operator": ">",
+      "value": 25
+    },
+    "advisory": "Wind speeds exceed 25 km/h. Avoid aerial or foliar spraying on cotton crops due to drift, and stake vulnerable young plants.",
+    "region": "India"
+  },
+  {
+    "id": "tomato_humidity_blight",
+    "crop": "tomato",
+    "keywords": ["tomato", "blight", "fungal", "humidity"],
+    "trigger": {
+      "field": "humidity_pct",
+      "operator": ">",
+      "value": 80
+    },
+    "advisory": "Relative humidity exceeds 80%, creating conditions favorable for fungal blights in tomato. Ensure soil drainage and inspect foliage.",
+    "region": "India"
+  },
+  {
+    "id": "onion_harvest_rain",
+    "crop": "onion",
+    "keywords": ["onion", "harvest", "harvesting", "curing"],
+    "trigger": {
+      "field": "rain_probability",
+      "operator": ">",
+      "value": 45
+    },
+    "advisory": "Postpone harvesting and field curing of onions if rain chance exceeds 45% to prevent fungal rot and storage decay.",
+    "region": "India"
+  },
+  {
+    "id": "vegetables_heat_protection",
+    "crop": "vegetables",
+    "keywords": ["vegetables", "vegetable", "leafy", "heat", "sun"],
+    "trigger": {
+      "field": "temperature_c",
+      "operator": ">",
+      "value": 35
+    },
+    "advisory": "Temperatures exceeding 35°C cause wilting in leafy vegetables. Employ mulching, shade netting, or morning micro-sprinklers.",
+    "region": "India"
+  },
+  {
+    "id": "fruit_orchard_wind_alert",
+    "crop": "fruit crops",
+    "keywords": ["fruit", "orchard", "mango", "banana", "citrus", "wind"],
+    "trigger": {
+      "field": "wind_kmh",
+      "operator": ">",
+      "value": 30
+    },
+    "advisory": "Strong winds (>30 km/h) can cause heavy premature fruit drop in mango, banana, and citrus orchards. Prop heavy-bearing branches.",
+    "region": "India"
+  }
+]
