@@ -19,6 +19,7 @@ import {
 } from './components/Icons';
 import { fetchWeather, fetchAlerts, sendChat } from './api';
 import { LanguageProvider, useLanguage } from './i18n/LanguageContext';
+import { stopGlobalAudio } from './utils/speechManager';
 
 function MainApp() {
   const { language, setLanguage, t } = useLanguage();
@@ -47,6 +48,7 @@ function MainApp() {
   const sendingLockRef = useRef(false);
 
   useEffect(() => {
+    stopGlobalAudio();
     if (!hasUserMessaged.current) {
       setMessages([
         {
@@ -117,6 +119,7 @@ function MainApp() {
   const handleSend = async (text) => {
     const trimmed = (text || '').trim();
     if (!trimmed || isWaitingChat || sendingLockRef.current) return;
+    stopGlobalAudio();
     sendingLockRef.current = true;
     hasUserMessaged.current = true;
     const reqId = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
@@ -130,7 +133,17 @@ function MainApp() {
     try {
       const res = await sendChat({
         query: trimmed,
-        location: selectedLocation?.displayName || selectedLocation?.name || null,
+        location: selectedLocation
+          ? {
+              name: selectedLocation.displayName || selectedLocation.name,
+              displayName: selectedLocation.displayName,
+              latitude: selectedLocation.latitude,
+              longitude: selectedLocation.longitude,
+              district: selectedLocation.district,
+              state: selectedLocation.state,
+              country: selectedLocation.country,
+            }
+          : null,
         language,
         latitude: selectedLocation?.latitude ?? null,
         longitude: selectedLocation?.longitude ?? null,
@@ -152,8 +165,9 @@ function MainApp() {
         },
       ]);
 
-      // If backend returns new weather data for location, sync it
-      if (res.weather?.current && selectedLocation) {
+      // If backend returns new weather data for application location, sync it.
+      // Do NOT overwrite app weather when query asked about an explicit query-specific location (e.g. Panjim).
+      if (res.weather?.current && selectedLocation && res.location_source !== 'query') {
         setWeather((prev) => ({
           ...prev,
           current: res.weather.current,

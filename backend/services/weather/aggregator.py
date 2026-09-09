@@ -111,6 +111,14 @@ class WeatherAggregator:
 
         display_location = location_name or f"Lat {latitude:.2f}, Lon {longitude:.2f}"
 
+        # Clean, canonical source provenance without repetitive clutter
+        has_imd = any("IMD" in s for s in sources_used) or bool(imd_warnings) or bool(imd_obs)
+        clean_source_label = (
+            "Open-Meteo — Forecast · IMD — Official Warnings"
+            if has_imd
+            else "Open-Meteo — Forecast"
+        )
+
         result = {
             "location": display_location,
             "district": district,
@@ -121,8 +129,8 @@ class WeatherAggregator:
             "forecast": forecast,
             "hourly": hourly,
             "warnings": imd_warnings,
-            "sources": sources_used or ["Open-Meteo"],
-            "source": ", ".join(sources_used) or f"Open-Meteo, updated {iso_timestamp}",
+            "sources": ["Open-Meteo", "IMD"] if has_imd else ["Open-Meteo"],
+            "source": clean_source_label,
             "retrieved_at": iso_timestamp,
         }
 

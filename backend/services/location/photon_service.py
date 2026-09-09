@@ -36,6 +36,51 @@ INDIAN_AGRICULTURAL_GAZETTEER = {
         "longitude": 74.0044,
         "displayName": "Shiroda, South Goa, Goa, India",
     },
+    "primary health centre, shiroda, ponda, goa": {
+        "name": "Primary Health Centre, Shiroda",
+        "district": "South Goa",
+        "state": "Goa",
+        "country": "India",
+        "latitude": 15.2974,
+        "longitude": 74.0044,
+        "displayName": "Primary Health Centre, Shiroda, Ponda, Goa",
+    },
+    "primary health centre, shiroda": {
+        "name": "Primary Health Centre, Shiroda",
+        "district": "South Goa",
+        "state": "Goa",
+        "country": "India",
+        "latitude": 15.2974,
+        "longitude": 74.0044,
+        "displayName": "Primary Health Centre, Shiroda, Ponda, Goa",
+    },
+    "primary health centre, ponda": {
+        "name": "Primary Health Centre, Ponda",
+        "district": "North Goa",
+        "state": "Goa",
+        "country": "India",
+        "latitude": 15.4026,
+        "longitude": 74.0134,
+        "displayName": "Primary Health Centre, Ponda, North Goa, Goa",
+    },
+    "shiroda, ponda, goa": {
+        "name": "Shiroda",
+        "district": "South Goa",
+        "state": "Goa",
+        "country": "India",
+        "latitude": 15.2974,
+        "longitude": 74.0044,
+        "displayName": "Shiroda, South Goa, Goa, India",
+    },
+    "shiroda, ponda": {
+        "name": "Shiroda",
+        "district": "South Goa",
+        "state": "Goa",
+        "country": "India",
+        "latitude": 15.2974,
+        "longitude": 74.0044,
+        "displayName": "Shiroda, South Goa, Goa, India",
+    },
     "ponda": {
         "name": "Ponda",
         "district": "North Goa",
@@ -55,6 +100,15 @@ INDIAN_AGRICULTURAL_GAZETTEER = {
         "displayName": "Margao, South Goa, Goa, India",
     },
     "panaji": {
+        "name": "Panaji",
+        "district": "North Goa",
+        "state": "Goa",
+        "country": "India",
+        "latitude": 15.4909,
+        "longitude": 73.8278,
+        "displayName": "Panaji, North Goa, Goa, India",
+    },
+    "panjim": {
         "name": "Panaji",
         "district": "North Goa",
         "state": "Goa",
@@ -281,6 +335,25 @@ async def search_locations(query: str, limit: int = 6) -> list[dict]:
     if target_key in INDIAN_AGRICULTURAL_GAZETTEER:
         gaz = INDIAN_AGRICULTURAL_GAZETTEER[target_key]
         return [{**gaz, "source": "photon"}]
+
+    # Check normalized gazetteer match without punctuation
+    norm_q = re.sub(r"[,.\-_/]+", " ", q_low).strip()
+    norm_q = " ".join(norm_q.split())
+    for k, v in INDIAN_AGRICULTURAL_GAZETTEER.items():
+        norm_k = re.sub(r"[,.\-_/]+", " ", k).strip()
+        norm_k = " ".join(norm_k.split())
+        if norm_q == norm_k or (len(norm_k) > 4 and norm_k in norm_q):
+            return [{**v, "source": "photon"}]
+
+    # Also check if major location keywords match a gazetteer entry
+    if "shiroda" in norm_q and "ponda" in norm_q:
+        return [{**INDIAN_AGRICULTURAL_GAZETTEER["primary health centre, shiroda, ponda, goa"], "source": "photon"}]
+    if "panjim" in norm_q or "panaji" in norm_q:
+        return [{**INDIAN_AGRICULTURAL_GAZETTEER["panaji"], "source": "photon"}]
+    if "ponda" in norm_q:
+        return [{**INDIAN_AGRICULTURAL_GAZETTEER["ponda"], "source": "photon"}]
+    if "shiroda" in norm_q:
+        return [{**INDIAN_AGRICULTURAL_GAZETTEER["shiroda"], "source": "photon"}]
 
     # 2. Attempt live Photon search with geographic bias toward India
     params = {

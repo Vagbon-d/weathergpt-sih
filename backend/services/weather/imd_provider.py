@@ -18,17 +18,6 @@ logger = logging.getLogger(__name__)
 IMD_API_KEY = os.getenv("IMD_API_KEY", "").strip()
 IMD_BASE_URL = os.getenv("IMD_BASE_URL", "https://api.imd.gov.in").rstrip("/")
 
-DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "data"))
-ALERTS_FILE = os.path.join(DATA_DIR, "alerts_demo.json")
-
-# Load local demo alert database for fallback when IMD API credentials are unconfigured
-try:
-    with open(ALERTS_FILE, encoding="utf-8") as f:
-        DEMO_ALERTS = json.load(f)
-except Exception:
-    DEMO_ALERTS = []
-
-
 class IMDProvider(WeatherProvider):
     name = "IMD"
     authority_priority = 10  # Highest authority for Indian warnings
@@ -36,7 +25,7 @@ class IMDProvider(WeatherProvider):
     def __init__(self):
         self.has_api_key = bool(IMD_API_KEY)
         if not self.has_api_key:
-            logger.info("IMDProvider: IMD_API_KEY is not set. Operating in verified simulation/demo mode.")
+            logger.info("IMDProvider: Operating with authoritative crawled IMD bulletins and threshold analysis.")
 
     async def fetch_current(
         self, latitude: float, longitude: float, location_name: str = ""
@@ -288,29 +277,27 @@ class IMDProvider(WeatherProvider):
         if data_alerts:
             return data_alerts
 
-        # 3. Only match simulated demo alerts if user explicitly queries a demo drill location
-        search_terms = [t.lower() for t in [district, state, location_name] if t]
-        matched_demo = []
-        for item in DEMO_ALERTS:
-            item_loc = item.get("location", "").lower()
-            if any(term in item_loc or item_loc in term for term in search_terms if len(term) > 2):
-                hazard = item.get("hazard", "")
-                severity = "YELLOW"
-                if any(w in hazard.lower() for w in ["cyclone", "flood", "severe"]):
-                    severity = "ORANGE"
-                if "red" in hazard.lower() or "extreme" in hazard.lower():
-                    severity = "RED"
-
-                matched_demo.append({
-                    "id": item.get("id"),
-                    "hazard": hazard,
-                    "severity": severity,
-                    "location": item.get("location"),
-                    "message": item.get("message"),
-                    "advisory": "Simulation drill scenario for prototype demonstration.",
-                    "valid_for": item.get("valid_for", "Next 24 hours"),
-                    "source": "IMD (Demo Simulation)",
-                    "is_official": False,
+        # 3. Check authoritative crawled official IMD warnings for the requested location
+        from services import rag_service
+        search_loc = district or state or location_name
+        crawled_warnings = rag_service.get_official_warnings(location=search_loc)
+        if crawled_warnings:
+            mapped_official = []
+            for item in crawled_warnings:
+                adv_list = item.get("advisories") or []
+                adv_str = adv_list[0] if adv_list else "Follow local district disaster management guidelines."
+                mapped_official.append({
+                    "id": item.get("id", "IMD-WARN"),
+                    "hazard": item.get("title") or f"IMD {item.get('category', 'Weather').replace('_', ' ').title()} Warning",
+                    "severity": item.get("severity", "YELLOW").upper(),
+                    "location": item.get("location") or loc_display,
+                    "message": item.get("text") or "",
+                    "advisory": adv_str,
+                    "valid_for": item.get("valid_until", "Next 24 hours"),
+                    "source": "IMD Official",
+                    "is_official": True,
                 })
+            return mapped_official
 
-        return matched_demo
+        # No active warnings found for this location
+        return []

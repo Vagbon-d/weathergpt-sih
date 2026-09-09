@@ -1,8 +1,20 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routers import weather, chat, alerts, advisory, location, language
+from routers import weather, chat, alerts, advisory, location, language, crawler
+from services.crawler import crawler_scheduler
 
-app = FastAPI(title="WeatherGPT Prototype API", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Start background crawler scheduler
+    crawler_scheduler.start()
+    yield
+    # Shutdown: Stop crawler scheduler
+    crawler_scheduler.stop()
+
+
+app = FastAPI(title="WeatherGPT Prototype API", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -18,6 +30,7 @@ app.include_router(alerts.router)
 app.include_router(advisory.router)
 app.include_router(location.router)
 app.include_router(language.router)
+app.include_router(crawler.router)
 
 
 @app.post("/tts")
@@ -31,7 +44,19 @@ def root():
     return {
         "status": "ok",
         "message": "WeatherGPT prototype backend running",
-        "endpoints": ["/health", "/weather", "/chat", "/alerts", "/advisory", "/location/search", "/location/reverse", "/language/tts", "/docs"],
+        "endpoints": [
+            "/health",
+            "/weather",
+            "/chat",
+            "/alerts",
+            "/advisory",
+            "/location/search",
+            "/location/reverse",
+            "/language/tts",
+            "/crawl/status",
+            "/crawl/run",
+            "/docs",
+        ],
     }
 
 

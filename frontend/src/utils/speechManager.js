@@ -1,17 +1,18 @@
 /**
  * WeatherGPT Speech Synthesis Manager (SIH26068)
  *
- * Provides a robust singleton controller for browser text-to-speech with:
- * 1. Asynchronous voice pre-warming (solves Chromium empty voice list bug)
- * 2. Strict locale & voice name matching for 11 Indian languages (including macOS Lekha)
- * 3. Fallback protection (NEVER speaks Indian scripts with an English voice)
- * 4. Text cleaning and phonetic unit expansion (prepareTTS)
- * 5. Sentence chunking to prevent browser 15-second speech synthesis cutoff
- * 6. Global singleton cancellation (stops existing playback before starting new)
+ * Provides a robust controller for browser text-to-speech with:
+ * 1. Real Hindi voice discovery & scoring (Lekha, Google हिन्दी, Swara, Madhur)
+ * 2. Strict fallback protection (NEVER speaks Hindi or Indic scripts with an English voice)
+ * 3. Answer language detection based on text characters (Devanagari -> Hindi)
+ * 4. Asynchronous voice loading handling for Chromium & WebKit
+ * 5. Instant cancellation of prior audio (single active playback)
+ * 6. Development console logging ([TTS] Provider / Language / Voice / Text)
+ * 7. Global test function window.__testTTS() for quick verification
  */
 
 export const LOCALE_TARGETS = {
-  en: ["en-IN", "en-US", "en-GB", "en"],
+  en: ["en-IN", "en_IN", "en-US", "en-GB", "en"],
   hi: ["hi-IN", "hi_IN", "hi"],
   mr: ["mr-IN", "mr_IN", "mr"],
   gu: ["gu-IN", "gu_IN", "gu"],
@@ -25,16 +26,16 @@ export const LOCALE_TARGETS = {
 };
 
 export const LANGUAGE_KEYWORDS = {
-  en: ["english", "india"],
-  hi: ["hindi", "हिन्दी", "devanagari", "lekha"],
-  mr: ["marathi", "मराठी"],
-  gu: ["gujarati", "ગુજરાતી"],
-  bn: ["bengali", "bangla", "বাংলা"],
-  ta: ["tamil", "தமிழ்"],
-  te: ["telugu", "తెలుగు"],
-  kn: ["kannada", "ಕನ್ನಡ"],
-  ml: ["malayalam", "മലയാളം"],
-  pa: ["punjabi", "ਪੰਜਾਬੀ", "gurmukhi"],
+  en: ["english", "india", "indian", "rishi", "aman"],
+  hi: ["hindi", "हिन्दी", "devanagari", "lekha", "swara", "madhur", "hemant", "kalpana"],
+  mr: ["marathi", "मराठी", "lekha"],
+  gu: ["gujarati", "ગુજરાતી", "dhwani", "niranjan"],
+  bn: ["bengali", "bangla", "বাংলা", "piya", "tanisha", "bashkar"],
+  ta: ["tamil", "தமிழ்", "vani", "valluvar"],
+  te: ["telugu", "తెలుగు", "geeta", "mohan"],
+  kn: ["kannada", "ಕನ್ನಡ", "soumya", "gagan"],
+  ml: ["malayalam", "മലയാളം", "sobhana", "midhun"],
+  pa: ["punjabi", "ਪੰਜਾਬੀ", "gurmukhi", "raajan"],
   or: ["odia", "oriya", "ଓଡ଼ିଆ"],
 };
 
@@ -49,7 +50,7 @@ export const VOICE_NOT_FOUND_MESSAGES = {
   ml: "ഈ ഉപകരണത്തിൽ മലയാളം ശബ്ദം ലഭ്യമല്ല.",
   pa: "ਇਸ ਡਿਵਾਈਸ ਤੇ ਪੰਜਾਬੀ ਆਵਾਜ਼ ਉਪਲਬਧ ਨਹੀਂ ਹੈ।",
   or: "ଏହି ଡିଭାଇସରେ ଓଡ଼ିଆ ସ୍ୱର ଉପଲବ୍ଧ ନାହିଁ।",
-  en: "No speech voice found for this language on your device.",
+  en: "Voice playback is unavailable on this device.",
 };
 
 let currentGlobalAudio = null;
@@ -77,6 +78,33 @@ export function registerGlobalAudio(audioElement) {
 }
 
 /**
+ * Detect language of an answer based on its text script rather than solely UI context.
+ * Devanagari script -> Hindi (or Marathi if user selected Marathi).
+ * Latin characters -> English / Hinglish.
+ */
+export function detectAnswerLanguage(text, fallbackLang = "en") {
+  if (!text || typeof text !== "string") return fallbackLang || "en";
+
+  // Check script ranges in answer text
+  if (/[\u0900-\u097F]/.test(text)) {
+    // Devanagari script (Hindi / Marathi)
+    if (fallbackLang === "mr") return "mr";
+    return "hi";
+  }
+  if (/[\u0980-\u09FF]/.test(text)) return "bn";
+  if (/[\u0A00-\u0A7F]/.test(text)) return "pa";
+  if (/[\u0A80-\u0AFF]/.test(text)) return "gu";
+  if (/[\u0B00-\u0B7F]/.test(text)) return "or";
+  if (/[\u0B80-\u0BFF]/.test(text)) return "ta";
+  if (/[\u0C00-\u0C7F]/.test(text)) return "te";
+  if (/[\u0C80-\u0CFF]/.test(text)) return "kn";
+  if (/[\u0D00-\u0D7F]/.test(text)) return "ml";
+
+  // Latin characters or no Indic scripts -> fallback or English
+  return fallbackLang && fallbackLang !== "hi" ? fallbackLang : "en";
+}
+
+/**
  * Phonetically expands weather units and strips markdown, citations, emojis for clean TTS.
  */
 export function prepareTTS(text, langCode = "en") {
@@ -100,7 +128,10 @@ export function prepareTTS(text, langCode = "en") {
   cleaned = cleaned.replace(/^\s*>\s+/gm, " ");
 
   // Remove common emojis
-  cleaned = cleaned.replace(/([\u2700-\u27BF]|[\uE000-\uF8FF]|\uD83C[\uDC00-\uDFFF]|\uD83D[\uDC00-\uDFFF]|[\u2011-\u26FF]|\uD83E[\uDD10-\uDDFF])/g, " ");
+  cleaned = cleaned.replace(
+    /([\u2700-\u27BF]|[\uE000-\uF8FF]|\uD83C[\uDC00-\uDFFF]|\uD83D[\uDC00-\uDFFF]|[\u2011-\u26FF]|\uD83E[\uDD10-\uDDFF])/g,
+    " "
+  );
 
   const lang = (langCode || "en").toLowerCase().split("-")[0];
 
@@ -199,6 +230,143 @@ export function prepareTTS(text, langCode = "en") {
   return cleaned.replace(/\s+/g, " ").trim();
 }
 
+/**
+ * Accurately scores a SpeechSynthesisVoice for a target language.
+ * Strict Disqualification: Never permits English or foreign voices to speak Hindi / Indic scripts.
+ */
+export function scoreVoice(voice, langCode = "en") {
+  if (!voice) return -1;
+  const cleanLang = (langCode || "en").toLowerCase().split("-")[0];
+  const voiceLang = (voice.lang || "").toLowerCase().replace("_", "-");
+  const voiceName = (voice.name || "").toLowerCase();
+
+  // === HINDI VOICE SCORING ===
+  if (cleanLang === "hi") {
+    // HARD DISQUALIFICATION: Never speak Hindi with English voices
+    if (voiceLang.startsWith("en") || voiceName.includes("english")) return -1;
+
+    // Disqualify foreign languages
+    const foreign = [
+      "es-", "fr-", "de-", "zh-", "ja-", "ru-", "ar-", "ko-",
+      "it-", "pt-", "nl-", "sv-", "pl-", "tr-", "vi-", "id-"
+    ];
+    if (foreign.some((prefix) => voiceLang.startsWith(prefix))) return -1;
+
+    let score = 0;
+
+    // 1. High-Priority Known Hindi Voices
+    if (voiceName.includes("lekha")) {
+      score += 1200; // macOS Indian Hindi (Lekha)
+    } else if (
+      voiceName.includes("google हिन्दी") ||
+      (voiceName.includes("google") && voiceName.includes("हिन्दी"))
+    ) {
+      score += 1100; // Chrome Google हिन्दी
+    } else if (voiceName.includes("google hindi")) {
+      score += 1050;
+    } else if (voiceName.includes("swara")) {
+      score += 1000; // Windows / Edge Microsoft Swara Natural
+    } else if (voiceName.includes("madhur")) {
+      score += 1000; // Windows / Edge Microsoft Madhur Natural
+    } else if (voiceName.includes("hemant")) {
+      score += 900;
+    } else if (voiceName.includes("kalpana")) {
+      score += 900;
+    } else if (
+      voiceName.includes("hindi") ||
+      voiceName.includes("हिन्दी") ||
+      voiceName.includes("devanagari")
+    ) {
+      score += 600;
+    }
+
+    // 2. Strict Locale Matching
+    if (voiceLang === "hi-in") {
+      score += 500;
+    } else if (voiceLang.startsWith("hi")) {
+      score += 400;
+    }
+
+    // 3. Quality & Natural Enhancements
+    if (voiceName.includes("natural") || voiceName.includes("neural") || voiceName.includes("online")) {
+      score += 100;
+    }
+    if (voiceName.includes("enhanced") || voiceName.includes("premium")) {
+      score += 80;
+    }
+    if (voice.localService) {
+      score += 20;
+    }
+
+    return score > 0 ? score : -1;
+  }
+
+  // === ENGLISH VOICE SCORING ===
+  if (cleanLang === "en") {
+    // Disqualify non-English voices
+    if (!voiceLang.startsWith("en") && !voiceName.includes("english")) return -1;
+
+    let score = 50; // Base English voice
+    // Prioritize Indian English voices
+    if (voiceName.includes("rishi")) {
+      score += 1200; // macOS Rishi
+    } else if (voiceName.includes("aman")) {
+      score += 1100; // macOS Aman
+    } else if (
+      voiceName.includes("google") &&
+      (voiceName.includes("indian english") || voiceName.includes("en-in"))
+    ) {
+      score += 1000;
+    } else if (
+      voiceName.includes("veena") ||
+      voiceName.includes("pradeep") ||
+      voiceName.includes("neerja")
+    ) {
+      score += 900;
+    } else if (voiceLang === "en-in") {
+      score += 600;
+    }
+
+    if (voiceName.includes("natural") || voiceName.includes("neural")) score += 50;
+    if (voiceName.includes("enhanced")) score += 40;
+    return score;
+  }
+
+  // === OTHER INDIC LANGUAGES SCORING ===
+  // Disqualify English and unrelated foreign languages
+  if (voiceLang.startsWith("en") || voiceName.includes("english")) return -1;
+  const foreign = ["es-", "fr-", "de-", "zh-", "ja-", "ru-", "ar-", "ko-", "it-", "pt-", "nl-"];
+  if (foreign.some((prefix) => voiceLang.startsWith(prefix))) return -1;
+
+  const targetLocales = LOCALE_TARGETS[cleanLang] || [cleanLang];
+  const keywords = LANGUAGE_KEYWORDS[cleanLang] || [cleanLang];
+
+  let score = 0;
+  for (const target of targetLocales) {
+    if (voiceLang === target.toLowerCase()) {
+      score += 500;
+      break;
+    } else if (voiceLang.startsWith(target.toLowerCase().split("-")[0])) {
+      score += 300;
+      break;
+    }
+  }
+
+  for (const kw of keywords) {
+    if (voiceName.includes(kw.toLowerCase())) {
+      score += 400;
+      break;
+    }
+  }
+
+  // Marathi fallback: Lekha natively speaks Devanagari phonemes properly
+  if (cleanLang === "mr" && voiceName.includes("lekha")) {
+    score += 350;
+  }
+
+  return score > 0 ? score : -1;
+}
+
 class SpeechManager {
   constructor() {
     this.voices = [];
@@ -219,82 +387,115 @@ class SpeechManager {
         if (v && v.length > 0) {
           this.voices = v;
         }
-      } catch {
-        // ignore
-      }
+      } catch {}
     };
 
     load();
     if (typeof window !== "undefined" && window.speechSynthesis) {
-      window.speechSynthesis.onvoiceschanged = load;
+      if (typeof window.speechSynthesis.addEventListener === "function") {
+        window.speechSynthesis.addEventListener("voiceschanged", load);
+      } else {
+        window.speechSynthesis.onvoiceschanged = load;
+      }
     }
   }
 
+  /**
+   * Robust async voice loader that handles Chromium/WebKit empty initial array.
+   */
   async getVoicesAsync(timeoutMs = 1200) {
     if (!this.isSupported) return [];
-    if (this.voices && this.voices.length > 0) {
-      return this.voices;
+
+    let current = [];
+    try {
+      current = window.speechSynthesis.getVoices() || [];
+    } catch {}
+
+    if (current && current.length > 0) {
+      this.voices = current;
+      return current;
     }
 
     return new Promise((resolve) => {
       let resolved = false;
-      const timer = setTimeout(() => {
-        if (!resolved) {
-          resolved = true;
-          this.voices = window.speechSynthesis.getVoices() || [];
-          resolve(this.voices);
-        }
-      }, timeoutMs);
 
-      const onVoices = () => {
+      const finish = () => {
         if (!resolved) {
           resolved = true;
-          clearTimeout(timer);
-          this.voices = window.speechSynthesis.getVoices() || [];
+          try {
+            this.voices = window.speechSynthesis.getVoices() || [];
+          } catch {
+            this.voices = [];
+          }
           resolve(this.voices);
         }
       };
 
-      if (window.speechSynthesis.onvoiceschanged !== undefined) {
-        const prev = window.speechSynthesis.onvoiceschanged;
-        window.speechSynthesis.onvoiceschanged = (e) => {
-          if (prev) prev(e);
-          onVoices();
-        };
+      const timer = setTimeout(finish, timeoutMs);
+
+      const handler = () => {
+        clearTimeout(timer);
+        if (typeof window.speechSynthesis.removeEventListener === "function") {
+          window.speechSynthesis.removeEventListener("voiceschanged", handler);
+        }
+        finish();
+      };
+
+      if (typeof window.speechSynthesis.addEventListener === "function") {
+        window.speechSynthesis.addEventListener("voiceschanged", handler);
+      } else {
+        window.speechSynthesis.onvoiceschanged = handler;
       }
+
+      // Interval poll fallback in case voiceschanged was missed
+      const poll = setInterval(() => {
+        const v = window.speechSynthesis.getVoices();
+        if (v && v.length > 0) {
+          clearInterval(poll);
+          clearTimeout(timer);
+          finish();
+        }
+      }, 50);
+
+      setTimeout(() => clearInterval(poll), timeoutMs);
     });
   }
 
-  findBestVoice(voices, langCode) {
-    if (!voices || voices.length === 0) return null;
+  /**
+   * Finds the best voice for a language using strict scoring.
+   * Returns null if no suitable voice exists on device (preventing English fallback for Hindi).
+   */
+  findBestVoice(voices, langCode = "en") {
     const cleanLang = (langCode || "en").toLowerCase().split("-")[0];
-    const targetLocales = LOCALE_TARGETS[cleanLang] || [cleanLang];
-    const keywords = LANGUAGE_KEYWORDS[cleanLang] || [cleanLang];
+    let list = voices && voices.length > 0 ? voices : this.voices;
 
-    for (const target of targetLocales) {
-      const match = voices.find(
-        (v) => v.lang && v.lang.toLowerCase().replace("_", "-") === target.toLowerCase()
-      );
-      if (match) return match;
+    // Direct live query if still empty
+    if ((!list || list.length === 0) && typeof window !== "undefined" && window.speechSynthesis) {
+      try {
+        list = window.speechSynthesis.getVoices() || [];
+      } catch {}
     }
 
-    for (const target of targetLocales) {
-      const prefix = target.split("-")[0].toLowerCase();
-      const match = voices.find((v) => v.lang && v.lang.toLowerCase().startsWith(prefix));
-      if (match) return match;
+    if (!list || list.length === 0) return null;
+
+    let bestVoice = null;
+    let highestScore = -1;
+
+    for (const v of list) {
+      const s = scoreVoice(v, cleanLang);
+      if (s > highestScore) {
+        highestScore = s;
+        bestVoice = v;
+      }
     }
 
-    for (const kw of keywords) {
-      const match = voices.find((v) => v.name && v.name.toLowerCase().includes(kw));
-      if (match) return match;
+    // If English requested and no voice scored positive, fallback to any English voice or first
+    if (!bestVoice && cleanLang === "en") {
+      const anyEn = list.find((v) => (v.lang || "").toLowerCase().startsWith("en"));
+      return anyEn || list[0] || null;
     }
 
-    if (cleanLang === "en") {
-      const enVoice = voices.find((v) => v.lang && v.lang.toLowerCase().startsWith("en"));
-      return enVoice || voices[0] || null;
-    }
-
-    return null;
+    return highestScore > 0 ? bestVoice : null;
   }
 
   async getVoiceInfo(langCode) {
@@ -339,12 +540,11 @@ class SpeechManager {
     if (!this.isSupported) return;
     try {
       window.speechSynthesis.cancel();
-    } catch {
-      // ignore
-    }
+    } catch {}
     if (this.activeCallback) {
-      this.activeCallback();
+      const cb = this.activeCallback;
       this.activeCallback = null;
+      cb();
     }
   }
 
@@ -366,13 +566,28 @@ class SpeechManager {
     const voices = await this.getVoicesAsync();
     const matchedVoice = this.findBestVoice(voices, cleanLang);
 
+    // Strict Hindi & Indic safety: Refuse to speak Hindi with an English voice
     if (!matchedVoice && cleanLang !== "en") {
       const errorMsg =
         VOICE_NOT_FOUND_MESSAGES[cleanLang] ||
-        `No speech voice found for ${cleanLang.toUpperCase()} on your device.`;
+        `Voice playback is unavailable for ${cleanLang.toUpperCase()} on this device.`;
+      console.warn(
+        `[TTS] No genuine voice found for ${cleanLang.toUpperCase()} on this device.\n` +
+          `Refusing to speak ${cleanLang.toUpperCase()} with an English voice.\n` +
+          `Installed device voices (${voices.length}): ${voices.map((v) => `${v.name} [${v.lang}]`).join(", ")}`
+      );
       if (onError) onError(errorMsg);
       return;
     }
+
+    // Required development console log format
+    console.log(
+      `[TTS]\nProvider: Browser SpeechSynthesis\nLanguage: ${
+        matchedVoice ? matchedVoice.lang : cleanLang
+      }\nVoice: ${matchedVoice ? matchedVoice.name : "Default"}\nVoice language: ${
+        matchedVoice ? matchedVoice.lang : cleanLang
+      }\nText: ${cleanText}`
+    );
 
     const chunks = this.chunkText(cleanText);
     this.isSpeaking = true;
@@ -432,7 +647,77 @@ class SpeechManager {
 
     speakNext();
   }
+
+  /**
+   * Diagnostic test function for developer console:
+   * window.__testTTS("hi")
+   */
+  async testTTS(langCode = "hi", customText = null) {
+    console.group(`[TTS Diagnostic Test] Testing Language: "${langCode}"`);
+    console.log("Querying speech voices from browser...");
+    const voices = await this.getVoicesAsync();
+    console.log(`Total available voices on device: ${voices.length}`);
+
+    if (console.table && voices.length > 0) {
+      console.table(
+        voices.map((v) => ({
+          name: v.name,
+          lang: v.lang,
+          default: v.default,
+          localService: v.localService,
+        }))
+      );
+    } else {
+      console.log(voices.map((v) => `${v.name} (${v.lang})`).join("; "));
+    }
+
+    const cleanLang = (langCode || "hi").toLowerCase().split("-")[0];
+    const bestVoice = this.findBestVoice(voices, cleanLang);
+
+    console.log(
+      `Chosen Voice for "${cleanLang}":`,
+      bestVoice ? `${bestVoice.name} (${bestVoice.lang})` : "NONE (No matching voice found)"
+    );
+
+    const testText =
+      customText ||
+      (cleanLang === "hi"
+        ? "नमस्ते। आज मौसम सुहावना है।"
+        : cleanLang === "mr"
+        ? "नमस्कार. आज हवामान छान आहे."
+        : "Hello! Today the weather is pleasant.");
+
+    if (!bestVoice && cleanLang !== "en") {
+      const msg = VOICE_NOT_FOUND_MESSAGES[cleanLang] || "Voice unavailable on this device.";
+      console.warn(`[TTS Test Failed] ${msg}`);
+      console.groupEnd();
+      return { status: "voice_unavailable", lang: cleanLang, message: msg };
+    }
+
+    console.log(`Speaking test text: "${testText}"`);
+    console.groupEnd();
+
+    this.speak(testText, cleanLang, {
+      onStart: () => console.log("[TTS Test] Audio playback started"),
+      onEnd: () => console.log("[TTS Test] Audio playback completed"),
+      onError: (err) => console.error("[TTS Test] Error during playback:", err),
+    });
+
+    return {
+      status: "speaking",
+      lang: cleanLang,
+      voice: bestVoice ? bestVoice.name : "Default",
+      voiceLang: bestVoice ? bestVoice.lang : "en-IN",
+      text: testText,
+    };
+  }
 }
 
 export const speechManager = new SpeechManager();
+
+// Register globally in browser for immediate dev testing
+if (typeof window !== "undefined") {
+  window.__testTTS = (lang = "hi", text = null) => speechManager.testTTS(lang, text);
+}
+
 export default speechManager;
