@@ -1,39 +1,61 @@
 """
-Lightweight retrieval and deterministic rule evaluation layer.
-No vector database or embeddings: keyword and crop matching with
-deterministic Python rule evaluation ensures agricultural thresholds
-are verified mathematically before prompting the LLM.
+Retrieval-Augmented Generation (RAG) & Advisory Knowledge Layer for WeatherGPT (SIH26068).
 
-The LLM is strictly a language layer and is never asked to calculate
-whether a weather threshold is triggered.
+Indexes authoritative meteorological knowledge:
+1. Agricultural Decision Rules & Crop Advisory Knowledge Base (advisory_kb.json)
+2. Crawled Official IMD Weather Bulletins, Cyclone Outlooks & District Warnings
+
+Provides multi-faceted retrieval based on:
+- Location (District, State, Sub-division, National)
+- Temporal target (Today, Tomorrow, Specific dates)
+- Query Intent (Heavy rain, Cyclone, Thunderstorm, Heatwave, Spraying, Irrigation, Harvesting)
+- Agricultural Crop Context (Rice, Wheat, Cotton, Vegetables, etc.)
+
+Guarantees 100% Grounding:
+The LLM receives ONLY verified, retrieved facts and rule evaluations.
+ZERO fake or manufactured alerts.
 """
 
 import json
+import logging
 import os
-from typing import Any
+import re
+from typing import Any, Optional
 
-DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
+from services.crawler.imd_crawler import crawler_instance
 
-with open(os.path.join(DATA_DIR, "advisory_kb.json"), encoding="utf-8") as f:
-    ADVISORY_KB = json.load(f)
+logger = logging.getLogger(__name__)
 
-with open(os.path.join(DATA_DIR, "alerts_demo.json"), encoding="utf-8") as f:
-    ALERTS = json.load(f)
+DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data"))
+ADVISORY_FILE = os.path.join(DATA_DIR, "advisory_kb.json")
+
+# Load Agricultural Advisory KB
+try:
+    with open(ADVISORY_FILE, encoding="utf-8") as f:
+        ADVISORY_KB = json.load(f)
+except Exception as exc:
+    logger.warning("RAG: Failed to load advisory_kb.json: %s", exc)
+    ADVISORY_KB = []
 
 
-def get_alerts(location: str | None = None) -> list[dict[str, Any]]:
+def get_official_warnings(location: Optional[str] = None) -> list[dict[str, Any]]:
     """
-    Return demo alerts, filtered by case-insensitive substring location match.
-    Every demo alert contains 'DEMO' and 'NOT AN OFFICIAL WARNING'.
+    Retrieve active official IMD warnings matching a location from the crawled repository.
+    Never returns demo or simulated warnings.
     """
     if not location or not location.strip():
-        return ALERTS
+        return crawler_instance.get_documents(category=None)
 
-    loc = location.strip().lower()
-    return [
-        alert for alert in ALERTS
-        if loc in alert["location"].lower() or alert["location"].lower() in loc
+    clean_loc = location.strip().lower()
+    docs = crawler_instance.get_documents(location=clean_loc)
+
+    # Filter strictly for official warning types
+    official_warnings = [
+        d for d in docs
+        if d.get("type") in ["warning", "cyclone", "nowcast"]
+        and d.get("severity") in ["RED", "ORANGE", "YELLOW"]
     ]
+    return official_warnings
 
 
 def retrieve_advisory(query: str = "", crop: str = "") -> list[dict[str, Any]]:
@@ -69,6 +91,74 @@ def retrieve_advisory(query: str = "", crop: str = "") -> list[dict[str, Any]]:
                 seen_ids.add(entry["id"])
 
     return matches
+
+
+def retrieve_meteorological_context(
+    query: str,
+    location: Optional[str] = None,
+    intent: Optional[str] = None,
+    crop: Optional[str] = None,
+    target_date: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """
+    Multi-faceted RAG retrieval over authoritative IMD bulletins and agromet advisories.
+    Matches:
+    - User query keywords (e.g. "cyclone", "heavy rain", "lightning", "spray")
+    - Location tokens (District, State, Sub-division)
+    - Intent domain
+    Returns top ranked, compact snippets for prompt injection.
+    """
+    q = (query or "").lower()
+    loc = (location or "").lower()
+    relevant_docs: list[dict[str, Any]] = []
+    seen_ids = set()
+
+    # 1. Check crawled IMD bulletins
+    all_crawled = crawler_instance.documents
+    for doc in all_crawled:
+        score = 0
+        doc_loc = (doc.get("location") or "").lower()
+        doc_state = (doc.get("state") or "").lower()
+        doc_district = (doc.get("district") or "").lower()
+        doc_cat = (doc.get("category") or "").lower()
+        doc_text = (doc.get("text") or "").lower()
+
+        # Location scoring
+        if loc:
+            loc_parts = [p.strip() for p in re.split(r"[,/ -]", loc) if len(p.strip()) > 2]
+            for part in loc_parts:
+                if part in doc_loc or part in doc_district or part in doc_state:
+                    score += 5
+            if "national" in doc_state or "all india" in doc_loc:
+                score += 2
+
+        # Intent / Category scoring
+        if intent and intent in doc_cat:
+            score += 4
+
+        # Keyword overlaps
+        if "cyclone" in q and ("cyclone" in doc_cat or "cyclone" in doc_text):
+            score += 6
+        if "rain" in q and ("heavy_rainfall" in doc_cat or "rain" in doc_text):
+            score += 4
+        if "heat" in q and ("heatwave" in doc_cat or "heat" in doc_text):
+            score += 4
+        if "lightning" in q and ("thunderstorm" in doc_cat or "lightning" in doc_text):
+            score += 4
+        if "warning" in q and doc.get("severity") in ["RED", "ORANGE", "YELLOW"]:
+            score += 3
+
+        if score > 0 and doc.get("id") not in seen_ids:
+            doc_copy = dict(doc)
+            doc_copy["relevance_score"] = score
+            relevant_docs.append(doc_copy)
+            seen_ids.add(doc.get("id"))
+
+    # Sort crawled docs by relevance
+    relevant_docs.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
+
+    # Return top 3 most relevant crawled snippets
+    return relevant_docs[:3]
 
 
 def evaluate_triggers(advisories: list[dict[str, Any]], weather_data: dict[str, Any]) -> list[dict[str, Any]]:

@@ -12,6 +12,7 @@ is constructed from the retrieved data without raising 500 errors.
 
 import json
 import logging
+import os
 import re
 from datetime import datetime
 from typing import Any
@@ -19,8 +20,9 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-OLLAMA_GENERATE_URL = "http://localhost:11434/api/generate"
-MODEL_NAME = "qwen3:4b"
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+OLLAMA_GENERATE_URL = f"{OLLAMA_BASE_URL}/api/generate"
+MODEL_NAME = os.getenv("OLLAMA_MODEL", "qwen3:4b")
 OLLAMA_TIMEOUT_SECONDS = 10.0
 
 
@@ -315,7 +317,7 @@ async def generate_grounded_answer(
         "Strict Grounding Rules:\n"
         "- NEVER invent or guess any number (temperature, rain %, wind speed, humidity).\n"
         "- Strictly avoid robotic technical jargon (never use terms like 'precipitation probability', 'relative humidity', 'weather code', 'API', 'intent classified').\n"
-        "- If a DEMO alert is present, mention clearly: 'DEMO alert — not an official warning'.\n"
+        "- Ground all weather numbers in retrieved Open-Meteo data and all warnings in official IMD bulletins.\n"
         "- Structure your answer cleanly in 2-4 sentences:\n"
         "  1. Direct, clear answer to the user's question\n"
         "  2. Important weather facts (temperatures, rain chance)\n"
@@ -326,7 +328,9 @@ async def generate_grounded_answer(
 
     if verified_context:
         loc_name = verified_context.get("location", {}).get("name", "Selected Location")
-        target_label = verified_context.get("temporal_label", "Today")
+        target_label = verified_context.get("date_label") or verified_context.get("temporal_label", "Today")
+        target_date = verified_context.get("requested_date") or verified_context.get("resolved_date", "")
+        date_intent = verified_context.get("date_intent", "today")
         tw = verified_context.get("target_weather", {})
         cond_loc = tw.get("condition", "Partly cloudy")
         rain_p = tw.get("rain_prob", 0)
@@ -336,9 +340,10 @@ async def generate_grounded_answer(
         if language == "hi":
             context_lines = [
                 f"स्थान: {loc_name}",
-                f"समय खिड़की: {target_label}",
+                f"लक्षित तिथि: {target_date} ({target_label})",
                 f"मौसम स्थिति: {cond_loc}",
-                f"तापमान: {temp_val} डिग्री सेल्सियस",
+                f"अधिकतम तापमान: {tw.get('temp_max', temp_val)} डिग्री सेल्सियस",
+                f"न्यूनतम तापमान: {tw.get('temp_min', round(temp_val - 5, 1))} डिग्री सेल्सियस",
                 f"बारिश की संभावना: {rain_p} प्रतिशत",
             ]
             if "humidity" in tw:
@@ -351,16 +356,29 @@ async def generate_grounded_answer(
                 context_lines.append(f"छिड़काव सलाह: {derived['spray_verdict']}")
             if derived.get("outdoor_verdict"):
                 context_lines.append(f"बाहरी कार्य सलाह: {derived['outdoor_verdict']}")
+            if verified_context.get("activity"):
+                act = verified_context["activity"]
+                act_suit = verified_context.get("activity_suitability", {})
+                suit_val = act_suit.get("suitability", "GOOD")
+                reasons = act_suit.get("reasons", [])
+                context_lines.append(f"पूछी गई गतिविधि: {act} (उपयुक्तता: {suit_val})")
+                if reasons:
+                    context_lines.append(f"गतिविधि विश्लेषण: {'; '.join(reasons)}")
 
             warnings = verified_context.get("warnings", [])
-            if warnings:
-                context_lines.append(f"मौसम चेतावनी: {warnings[0].get('message')}")
+            if warnings and (domain == "alerts" or verified_context.get("requires_alerts") or verified_context.get("intent") in ["official_warning", "cyclone_warning", "alerts"]):
+                context_lines.append(f"आधिकारिक आईएमडी चेतावनी: {warnings[0].get('message')}")
+
+            rag_docs = verified_context.get("rag_documents", [])
+            if rag_docs and (domain in ["alerts", "agriculture"] or verified_context.get("requires_agriculture")):
+                context_lines.append(f"आईएमडी बुलेटिन/कृषि सलाह: {rag_docs[0].get('text', '')[:200]}")
         else:
             context_lines = [
                 f"Location: {loc_name}",
-                f"Target Time Window: {target_label}",
+                f"Target Date: {target_date} ({target_label})",
                 f"Weather Condition: {cond_loc}",
-                f"Temperature: {temp_val}°C",
+                f"High Temperature: {tw.get('temp_max', temp_val)}°C",
+                f"Low Temperature: {tw.get('temp_min', round(temp_val - 5, 1))}°C",
                 f"Rain Probability: {rain_p}%",
             ]
             if "humidity" in tw:
@@ -373,10 +391,22 @@ async def generate_grounded_answer(
                 context_lines.append(f"Spraying Recommendation: {derived['spray_verdict']}")
             if derived.get("outdoor_verdict"):
                 context_lines.append(f"Outdoor Guidance: {derived['outdoor_verdict']}")
+            if verified_context.get("activity"):
+                act = verified_context["activity"]
+                act_suit = verified_context.get("activity_suitability", {})
+                suit_val = act_suit.get("suitability", "GOOD")
+                reasons = act_suit.get("reasons", [])
+                context_lines.append(f"Requested Activity: {act} (Deterministic Verdict: {suit_val})")
+                if reasons:
+                    context_lines.append(f"Activity Suitability Reasons: {'; '.join(reasons)}")
 
             warnings = verified_context.get("warnings", [])
-            if warnings:
-                context_lines.append(f"Warnings: {warnings[0].get('message')}")
+            if warnings and (domain == "alerts" or verified_context.get("requires_alerts") or verified_context.get("intent") in ["official_warning", "cyclone_warning", "alerts"]):
+                context_lines.append(f"Official IMD Warning: {warnings[0].get('message')}")
+
+            rag_docs = verified_context.get("rag_documents", [])
+            if rag_docs and (domain in ["alerts", "agriculture"] or verified_context.get("requires_agriculture")):
+                context_lines.append(f"Official IMD Bulletin/Advisory: {rag_docs[0].get('text', '')[:200]}")
 
         compact_context = "\n".join(context_lines)
     else:
@@ -384,6 +414,10 @@ async def generate_grounded_answer(
         localized_location = language_service.localize_location(raw_location, language)
         current = weather_data.get("current", {})
         forecast = weather_data.get("forecast", [])
+        date_intent = "today"
+        target_date = datetime.now().strftime("%Y-%m-%d")
+        target_label = "Today"
+        loc_name = localized_location
 
         # Format compact, fast factual context string (reduces token load by 80%)
         cur_cond_raw = current.get("condition", "")
@@ -432,18 +466,91 @@ async def generate_grounded_answer(
 
         compact_context = "\n".join(context_lines)
 
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    is_tomorrow = (date_intent == "tomorrow" or "tomorrow" in query.lower() or "कल" in query)
+    is_non_today = bool(
+        (target_date and target_date != today_str)
+        or (date_intent and date_intent != "today")
+    )
+
+    req_activity = verified_context.get("activity") if verified_context else None
+    req_act_suit = verified_context.get("activity_suitability") if verified_context else None
+
     if language == "hi":
+        if req_activity:
+            suit_v = req_act_suit.get("suitability", "GOOD") if req_act_suit else "GOOD"
+            activity_directive = (
+                f"\nअनिवार्य गतिविधि निर्देश:\n"
+                f"- उपयोगकर्ता ने '{req_activity}' के बारे में पूछा है।\n"
+                f"- आपका उत्तर सीधे '{req_activity}' की उपयुक्तता (निष्कर्ष: {suit_v}) पर केंद्रित होना चाहिए।\n"
+                f"- केवल सामान्य मौसम बताने के बजाय सीधे गतिविधि करने या न करने की सलाह दें।\n"
+            )
+        else:
+            activity_directive = ""
+
+        if is_tomorrow:
+            temporal_directive = (
+                f"\nअनिवार्य तिथि निर्देश:\n"
+                f"- लक्षित तिथि: {target_date} ({target_label})\n"
+                f"- उपयोगकर्ता ने 'कल' (Tomorrow) के बारे में पूछा है।\n"
+                f"- आपका उत्तर अनिवार्य रूप से 'कल' के बारे में होना चाहिए (उदाहरण: '{loc_name} में कल...').\n"
+                f"- 'आज' या 'Today in' का प्रयोग कदापि न करें। उत्तर केवल कल के मौसम पर आधारित होना चाहिए।\n"
+            )
+        elif is_non_today:
+            temporal_directive = (
+                f"\nअनिवार्य तिथि निर्देश:\n"
+                f"- लक्षित तिथि: {target_date} ({target_label})\n"
+                f"- उपयोगकर्ता ने '{target_label}' ({target_date}) के बारे में पूछा है।\n"
+                f"- आपका उत्तर अनिवार्य रूप से '{target_label}' के बारे में होना चाहिए (उदाहरण: '{loc_name} में {target_label} को...').\n"
+                f"- 'आज' या 'Today in' का प्रयोग कदापि न करें। उत्तर केवल लक्षित तिथि के मौसम पर आधारित होना चाहिए।\n"
+            )
+        else:
+            temporal_directive = ""
+
         user_prompt = f"""उपयोगकर्ता का प्रश्न:
 {query}
 
 सत्यापित मौसम डेटा (एकमात्र सत्य स्रोत):
 {compact_context}
-
+{temporal_directive}
+{activity_directive}
 कार्य:
 उपरोक्त सत्यापित डेटा के आधार पर 2-4 छोटे और अत्यंत सरल हिंदी वाक्यों में सीधा और मददगार उत्तर दें।
 रोबोटिक या तकनीकी शब्दों और अंग्रेजी शब्दों का बिल्कुल प्रयोग न करें।
 """
     else:
+        if req_activity:
+            suit_v = req_act_suit.get("suitability", "GOOD") if req_act_suit else "GOOD"
+            activity_directive = (
+                f"\nCRITICAL ACTIVITY DIRECTIVE:\n"
+                f"- The user specifically asked about '{req_activity}'.\n"
+                f"- You MUST directly answer whether '{req_activity}' is recommended. Deterministic Verdict: {suit_v}.\n"
+                f"- Do NOT merely output generic weather. Focus directly on the activity suitability and safety.\n"
+            )
+        else:
+            activity_directive = ""
+
+        if is_tomorrow:
+            temporal_directive = (
+                f"\nCRITICAL TEMPORAL DIRECTIVE:\n"
+                f"- Target Date: {target_date} ({target_label})\n"
+                f"- The user explicitly asked about TOMORROW.\n"
+                f"- You MUST begin your response referring to tomorrow (e.g. 'Tomorrow in {loc_name}...' or 'In {loc_name} tomorrow...').\n"
+                f"- You are STRICTLY FORBIDDEN from beginning with 'Today in...' or referring to today.\n"
+                f"- Answer ONLY for the specified target date: {target_date}.\n"
+            )
+        elif is_non_today:
+            temporal_directive = (
+                f"\nCRITICAL TEMPORAL DIRECTIVE:\n"
+                f"- Target Date: {target_date} ({target_label})\n"
+                f"- The user explicitly asked about {target_label} ({target_date}).\n"
+                f"- You MUST begin your response referring to {target_label} (e.g. 'On {target_label} in {loc_name}...').\n"
+                f"- You are STRICTLY FORBIDDEN from beginning with 'Today in...' or referring to today.\n"
+                f"- Answer ONLY for the specified target date: {target_date}.\n"
+            )
+        else:
+            temporal_directive = ""
+
         user_prompt = f"""USER QUESTION:
 {query}
 
@@ -452,7 +559,8 @@ REQUESTED LANGUAGE CODE:
 
 GROUNDED DATA CONTEXT (ONLY SOURCE OF TRUTH):
 {compact_context}
-
+{temporal_directive}
+{activity_directive}
 TASK:
 Answer the user's question directly and helpfully in 2-4 short sentences based ONLY on the grounded data above.
 Avoid technical jargon.

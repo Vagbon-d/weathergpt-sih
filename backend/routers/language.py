@@ -79,24 +79,7 @@ async def text_to_speech(req: TTSRequest):
                 "normalized_text": normalized_speech_text,
             }
 
-    # 2. Try Native Operating System Speech Synthesis (e.g. macOS Lekha for hi, Rishi for en)
-    system_tts_res = native_tts.synthesize_native_tts(
-        text=normalized_speech_text,
-        language=clean_lang,
-    )
-    if system_tts_res and system_tts_res.get("audio_base64"):
-        return {
-            "available": True,
-            "provider": "macos_system",
-            "voice": system_tts_res.get("voice", "System Voice"),
-            "audio_base64": system_tts_res["audio_base64"],
-            "format": system_tts_res.get("format", "wav"),
-            "source": "macos_system",
-            "language": clean_lang,
-            "normalized_text": normalized_speech_text,
-        }
-
-    # 3. Seamless fallback to browser Web Speech API
+    # 2. If Bhashini is unconfigured or fails, smoothly fallback to Browser SpeechSynthesis
     target_locale = LOCALE_MAP.get(clean_lang, "en-IN")
     return {
         "available": False,
@@ -106,7 +89,7 @@ async def text_to_speech(req: TTSRequest):
         "locale": target_locale,
         "voice_target": target_locale,
         "normalized_text": normalized_speech_text,
-        "message": "Bhashini and System TTS unavailable for this language; falling back to browser SpeechSynthesis.",
+        "message": "Bhashini unconfigured or unavailable; smoothly falling back to Browser SpeechSynthesis.",
     }
 
 

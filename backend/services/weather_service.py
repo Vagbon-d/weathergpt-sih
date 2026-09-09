@@ -52,30 +52,78 @@ async def get_current_and_forecast(
     location: str | None = None,
     latitude: float | None = None,
     longitude: float | None = None,
+    district: str = "",
+    state: str = "",
 ) -> dict[str, Any]:
     """
     Fetch current weather, multi-day forecast, hourly projections, and warnings.
     Supports coordinates or location search.
     Requires either coordinates or a non-empty location.
+
+    CRITICAL LOCATION ARCHITECTURE RULE:
+    1. If a human-readable location name is provided, it is NEVER overwritten by a reverse-geocode.
+    2. Coordinates must match the requested location. If coordinates point to an unrelated or foreign
+       location (e.g. England GPS while viewing a Goa location), the coordinates are corrected via geocoding.
     """
-    if latitude is not None and longitude is not None:
-        lat = float(latitude)
-        lon = float(longitude)
-        location_details = await photon_service.reverse_geocode(lat, lon)
-        location_name = location_details.get("displayName") or f"Lat {lat:.2f}, Lon {lon:.2f}"
-        district = location_details.get("district", "")
-        state = location_details.get("state", "")
-    elif location and location.strip():
-        lat, lon, location_name = await geocode(location)
-        district = ""
-        state = ""
-    else:
+    has_coords = latitude is not None and longitude is not None
+    has_name = bool(location and str(location).strip())
+
+    if not has_coords and not has_name:
         raise ValueError("Please provide a location name or coordinates. No default location is configured.")
 
-    return await aggregator.get_weather(
+    req_loc_name = str(location).strip() if has_name else ""
+    lat: float = float(latitude) if has_coords else 0.0
+    lon: float = float(longitude) if has_coords else 0.0
+
+    # 1. Detect and correct coordinate vs named location mismatch
+    # E.g. User header is 'Primary Health Centre, Shiroda, Ponda, Goa' (India: ~15.3, ~74.0),
+    # but browser GPS or proxy sent UK/foreign coordinates (e.g. 53.858, -0.435).
+    if has_name and has_coords:
+        is_outside_india = (lat > 38.5 or lat < 6.5 or lon < 68.0 or lon > 97.5)
+        name_lower = req_loc_name.lower()
+        indian_cues = ["goa", "ponda", "shiroda", "panjim", "panaji", "margao", "mapusa", "maharashtra", "pune", "mumbai", "india", "karnataka", "delhi", "centre", "health"]
+        has_indian_cue = any(c in name_lower for c in indian_cues)
+
+        if is_outside_india and has_indian_cue:
+            logger.warning(
+                "Coordinate mismatch detected: Location '%s' is in India, but coordinates (%f, %f) are foreign. Re-geocoding.",
+                req_loc_name, lat, lon
+            )
+            try:
+                lat, lon, geo_canon = await geocode(req_loc_name)
+            except Exception as e:
+                logger.error("Failed to re-geocode '%s': %s", req_loc_name, e)
+
+    # 2. Determine final location name and coordinates
+    if has_coords and not has_name:
+        location_details = await photon_service.reverse_geocode(lat, lon)
+        location_name = location_details.get("displayName") or f"Lat {lat:.2f}, Lon {lon:.2f}"
+        district = district or location_details.get("district", "")
+        state = state or location_details.get("state", "")
+    elif has_name and not has_coords:
+        lat, lon, location_name = await geocode(req_loc_name)
+    else:
+        # Both provided and validated
+        location_name = req_loc_name
+
+    weather_data = await aggregator.get_weather(
         latitude=lat,
         longitude=lon,
         location_name=location_name,
         district=district,
         state=state,
     )
+
+    # Attach Section 15 requested and retrieved location identity records
+    weather_data["requested_location"] = {
+        "name": location_name,
+        "latitude": round(lat, 4),
+        "longitude": round(lon, 4),
+    }
+    weather_data["retrieved_location"] = {
+        "name": weather_data.get("location", location_name),
+        "latitude": round(lat, 4),
+        "longitude": round(lon, 4),
+    }
+
+    return weather_data

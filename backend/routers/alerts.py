@@ -1,11 +1,11 @@
 """
-Alerts endpoint for WeatherGPT.
-Demo alerts are retrieved from local simulation data and explicitly labeled
-as DEMO ALERTS -- NOT OFFICIAL WARNINGS to ensure user safety and compliance.
+Alerts endpoint for WeatherGPT (SIH26068).
+
+Returns active authoritative IMD meteorological warnings and data-supported alerts.
+Guarantees zero fake or manufactured alerts.
 """
 
 from fastapi import APIRouter
-from services import rag_service
 from services.weather.imd_provider import IMDProvider
 
 router = APIRouter()
@@ -39,10 +39,16 @@ async def get_alerts(
             return {"alerts": warnings}
 
     if location and location.strip():
+        loc_str = location.strip()
         try:
-            weather = await weather_service.get_current_and_forecast(location=location.strip())
+            weather = await weather_service.get_current_and_forecast(location=loc_str)
             return {"alerts": weather.get("warnings", [])}
         except Exception:
-            return {"alerts": rag_service.get_alerts(location)}
+            warnings = await _imd_provider.fetch_warnings(
+                latitude=0.0,
+                longitude=0.0,
+                district=loc_str,
+            )
+            return {"alerts": warnings}
 
     return {"alerts": []}

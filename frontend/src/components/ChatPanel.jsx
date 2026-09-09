@@ -61,6 +61,7 @@ export default function ChatPanel({ messages, onSend, isWaiting, onRequestLocati
   };
 
   const handleKeyDown = (e) => {
+    if (e.nativeEvent?.isComposing || e.isComposing) return;
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       submit();
