@@ -7,8 +7,11 @@ import AgriculturePanel from './components/AgriculturePanel';
 import QuickSuggestions from './components/QuickSuggestions';
 import ChatPanel from './components/ChatPanel';
 import LanguageSelector from './components/LanguageSelector';
-import LocationModal from './components/LocationModal';
+import LocationModal, { normalizeLocation } from './components/LocationModal';
 import ActionRecommendations from './components/ActionRecommendations';
+import IVRSimulator from './components/IVRSimulator';
+import HelplineBanner from './components/HelplineBanner';
+import CallActivityFeed from './components/CallActivityFeed';
 import {
   IconCloudSun,
   IconMapPin,
@@ -28,7 +31,11 @@ function MainApp() {
   const [selectedLocation, setSelectedLocation] = useState(() => {
     try {
       const stored = sessionStorage.getItem('weathergpt_location');
-      return stored ? JSON.parse(stored) : null;
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        return normalizeLocation(parsed) || parsed;
+      }
+      return null;
     } catch {
       return null;
     }
@@ -70,38 +77,43 @@ function MainApp() {
       return;
     }
 
-    let cancelled = false;
+    const controller = new AbortController();
     setLoading(true);
     setError('');
 
-    fetchWeather(selectedLocation)
+    fetchWeather(selectedLocation, controller.signal)
       .then((w) => {
-        if (cancelled) return;
+        if (controller.signal.aborted) return;
         setWeather(w);
-        return fetchAlerts(selectedLocation);
+        return fetchAlerts(selectedLocation, controller.signal);
       })
       .then((a) => {
-        if (cancelled || !a) return;
+        if (controller.signal.aborted || !a) return;
         setAlerts(a.alerts || []);
       })
       .catch((err) => {
-        if (!cancelled) setError(err.message || 'Failed to load weather data.');
+        if (!controller.signal.aborted) {
+          setError(err.message || 'Failed to load weather data.');
+        }
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!controller.signal.aborted) {
+          setLoading(false);
+        }
       });
 
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, [selectedLocation]);
 
   // Handler when user chooses location in LocationModal
   const handleSelectLocation = (loc) => {
-    setSelectedLocation(loc);
+    const canonical = normalizeLocation(loc) || loc;
+    setSelectedLocation(canonical);
     setShowLocationModal(false);
     try {
-      sessionStorage.setItem('weathergpt_location', JSON.stringify(loc));
+      sessionStorage.setItem('weathergpt_location', JSON.stringify(canonical));
     } catch (e) {
       console.warn('Could not save location to sessionStorage:', e);
     }
@@ -135,13 +147,18 @@ function MainApp() {
         query: trimmed,
         location: selectedLocation
           ? {
-              name: selectedLocation.displayName || selectedLocation.name,
+              name: selectedLocation.name,
+              label: selectedLocation.label,
               displayName: selectedLocation.displayName,
               latitude: selectedLocation.latitude,
               longitude: selectedLocation.longitude,
+              city: selectedLocation.city,
               district: selectedLocation.district,
               state: selectedLocation.state,
               country: selectedLocation.country,
+              postcode: selectedLocation.postcode,
+              weather_location: selectedLocation.weather_location,
+              admin_label: selectedLocation.admin_label,
             }
           : null,
         language,
@@ -160,6 +177,7 @@ function MainApp() {
           role: 'assistant',
           text: answerText,
           source: sourceInfo,
+          sources: res.sources || (sourceInfo ? [sourceInfo] : ['Open-Meteo']),
           language: res.language || language,
           location_required: res.location_required === true,
         },
@@ -256,9 +274,14 @@ function MainApp() {
             {selectedLocation ? (
               <div className="flex items-center gap-1.5 bg-white/10 border border-white/15 rounded-full px-3 py-1 text-xs text-white">
                 <IconMapPin className="w-3.5 h-3.5 text-stone-300" />
-                <span className="font-medium max-w-[130px] sm:max-w-[180px] truncate" title={selectedLocation.displayName}>
-                  {selectedLocation.name || selectedLocation.displayName}
+                <span className="font-semibold max-w-[130px] sm:max-w-[180px] truncate" title={selectedLocation.displayName || selectedLocation.label}>
+                  {selectedLocation.short_label || (selectedLocation.state && !selectedLocation.name.toLowerCase().includes(selectedLocation.state.toLowerCase()) ? `${selectedLocation.name}, ${selectedLocation.state}` : (selectedLocation.label || selectedLocation.name))}
                 </span>
+                {selectedLocation.postcode && (
+                  <span className="text-[10px] text-white/80 bg-white/15 px-1.5 py-0.5 rounded font-mono hidden xs:inline" title={`PIN: ${selectedLocation.postcode}`}>
+                    {selectedLocation.postcode}
+                  </span>
+                )}
                 {selectedLocation.source === 'gps' && (
                   <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse ml-0.5" title="GPS Verified"></span>
                 )}
@@ -288,6 +311,8 @@ function MainApp() {
 
       {/* Main Container */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
+        {/* Helpline Banner — always visible, above the content grid */}
+        <HelplineBanner />
         {/* If no location is set yet, show an inviting landing banner */}
         {!selectedLocation && (
           <div className="mb-8 p-8 sm:p-12 bg-white border border-stone-200 rounded-3xl shadow-xs text-center space-y-6 max-w-2xl mx-auto animate-fade-in">
@@ -396,8 +421,14 @@ function MainApp() {
 
                 {/* Alerts Section: IMD Official & Simulated Warnings */}
                 <div id="section-alerts">
-                  <AlertBanner alerts={alerts} location={weather.location || selectedLocation.displayName} />
+                  <AlertBanner alerts={alerts} location={weather?.location || selectedLocation?.label || selectedLocation?.displayName} />
                 </div>
+
+                {/* Feature-Phone / IVR-SMS Demo Simulator */}
+                <IVRSimulator
+                  selectedLocation={selectedLocation}
+                  language={language}
+                />
               </>
             )}
 
@@ -435,6 +466,9 @@ function MainApp() {
                 {t('safetyDesc', 'Authoritative IMD warnings take precedence over generic models. Every weather and agricultural metric is calculated in Python before language generation. The LLM never invents numeric facts.')}
               </p>
             </div>
+
+            {/* Live Call Activity Feed — demo/observability layer */}
+            <CallActivityFeed />
           </div>
         </div>
       </main>

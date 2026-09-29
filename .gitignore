@@ -25,3 +25,10 @@ build/
 
 # Logs
 *.log
+
+# SQLite Databases
+*.db
+*.sqlite3
+
+# Local test scratchpad
+scratch/

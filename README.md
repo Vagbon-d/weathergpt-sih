@@ -79,8 +79,14 @@ Local Ollama (qwen3:4b)      Deterministic Human Fallback Engine
 
 ```
 weathergpt/
+├── app.py                          # Streamlit Management Portal & Telephony Simulation Hub
 ├── backend/
-│   ├── main.py                     # FastAPI entrypoint & crawler scheduler lifecycle
+│   ├── main.py                     # FastAPI entrypoint, IVR webhooks & crawler lifecycle
+│   ├── free_ivr_server.py          # Free GSM Telephony Gateway & Webhook Server
+│   ├── weather_engine.py           # Real-time NWP & IMD classification engine
+│   ├── database.py                 # SQLite farmer persistence & lookup
+│   ├── db/
+│   │   └── database.py             # SQLAlchemy aiosqlite caller profiles
 │   ├── routers/
 │   │   ├── chat.py                 # Grounded conversational assistant endpoint
 │   │   ├── weather.py              # Real-time weather & forecast endpoint
@@ -88,12 +94,15 @@ weathergpt/
 │   │   ├── advisory.py             # Agricultural decision support
 │   │   ├── location.py             # Photon geocoding and reverse geocoding
 │   │   ├── language.py             # Multilingual TTS & transliteration
-│   │   └── crawler.py              # Crawler status & on-demand triggers
+│   │   ├── crawler.py              # Crawler status & on-demand triggers
+│   │   ├── webhook.py              # Twilio / GSM IVR & SMS webhook handlers
+│   │   └── ws_call_status.py       # Live call-status WebSocket feed
 │   ├── services/
 │   │   ├── crawler/                # IMD bulletin crawler, parser, normalizer, scheduler
 │   │   ├── weather/                # Open-Meteo, IMD provider, and fallback logic
 │   │   ├── location/               # Photon OpenStreetMap service
 │   │   ├── language/               # Native TTS, Bhashini client, language detector
+│   │   ├── grounded_advisory.py    # Shared zero-hallucination advisory pipeline
 │   │   ├── query_engine.py         # Intent classification & deterministic fallback engine
 │   │   ├── rag_service.py          # Multidimensional RAG over IMD bulletins & advisories
 │   │   ├── advisory_service.py     # Agricultural threshold evaluation (spray, sow, harvest)
@@ -105,9 +114,9 @@ weathergpt/
 ├── frontend/
 │   ├── src/
 │   │   ├── App.jsx                 # Main application container & single-flight chat lock
-│   │   ├── components/             # Weather cards, ChatPanel, LocationModal, Audio controls
-│   │   ├── i18n/                   # 12 Indic locale dictionaries (zero emojis)
-│   │   └── services/api.js         # API integration client
+│   │   ├── components/             # Weather cards, ChatPanel, IVRSimulator, HelplineBanner
+│   │   ├── i18n/                   # 12 Indic locale dictionaries
+│   │   └── api.js                  # API integration client
 │   └── package.json
 ├── requirements.txt
 ├── .env.example
@@ -149,16 +158,18 @@ ollama serve
 
 ### Step 2: Set Up Backend Virtual Environment
 ```bash
-# Navigate to project root
-cd /Users/yuki.2/Desktop/weathergpt
-
 # Create virtualenv and install dependencies
-python3 -m venv .venv
+python -m venv .venv
+
+# On Linux/macOS:
 source .venv/bin/activate
+# On Windows:
+.venv\Scripts\activate
+
 pip install -r requirements.txt
 ```
 
-### Step 3: Launch the Backend
+### Step 3: Launch the Backend (FastAPI + IVR Webhooks)
 ```bash
 cd backend
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
@@ -166,9 +177,10 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 - API Documentation: [http://localhost:8000/docs](http://localhost:8000/docs)
 - Health Check: [http://localhost:8000/health](http://localhost:8000/health)
 - Crawler Status: [http://localhost:8000/crawl/status](http://localhost:8000/crawl/status)
+- IVR Webhooks: `POST /webhook/sms`, `POST /webhook/voice`, `POST /webhook/voice/process`
 
-### Step 4: Launch the Frontend
-In a new terminal window:
+### Step 4: Launch the Frontend (React + Vite)
+In a new terminal:
 ```bash
 cd frontend
 npm install
@@ -176,50 +188,31 @@ npm run dev
 ```
 Open [http://localhost:5173](http://localhost:5173) in your browser.
 
----
-
-## 6. Running in PyCharm
-
-1. Open the `/Users/yuki.2/Desktop/weathergpt` directory in PyCharm.
-2. Go to **Settings / Preferences -> Project: weathergpt -> Python Interpreter**.
-3. Select **Add Interpreter -> Existing** and point to `/Users/yuki.2/Desktop/weathergpt/.venv/bin/python`.
-4. Create a new **FastAPI / Python Run Configuration**:
-   - **Script path**: Select `uvicorn` inside `.venv/bin/uvicorn` or module `uvicorn`.
-   - **Parameters**: `main:app --reload --port 8000`
-   - **Working directory**: `/Users/yuki.2/Desktop/weathergpt/backend`
-5. Click **Run** or **Debug** to start the backend with full breakpoint debugging.
-
----
-
-## 7. Automated Test Suite (All 15 Scenarios)
-
-WeatherGPT includes a comprehensive end-to-end automated verification suite covering all core functional, mathematical, and safety requirements:
-
+### Step 5: (Optional) Launch the Streamlit Farmer Portal & Telephony Hub
+In a separate terminal:
 ```bash
-# Run the complete test suite
-.venv/bin/python /Users/yuki.2/.gemini/antigravity/brain/622d3c36-4ada-4a2b-813b-3d8e6ae387f0/scratch/test_sih_suite.py
+streamlit run app.py
 ```
-
-### Verified Test Scenarios:
-1. `"tomorrow weather"`: Resolves strictly to tomorrow's date, never today.
-2. `"will it rain tomorrow?"`: Extracts tomorrow's rain probability and advises on umbrella usage.
-3. `"kal baarish hogi kya?"`: Responds in natural Roman Hindi / Hinglish.
-4. `"कल बारिश होगी क्या?"`: Responds in pure Devanagari Hindi with zero leaked technical English.
-5. `"Can I spray pesticide today?"`: Evaluates rain probability and wind speed to return practical safety advice.
-6. `"Any warning near me?"`: Returns official IMD warnings or a clean "Normal conditions" notice with zero demo alerts.
-7. `"Is there a cyclone warning?"`: Retrieves authoritative RSMC New Delhi cyclone bulletins.
-8. `"Compare tomorrow and Sunday"`: Correctly extracts Sunday's forecast and performs temperature comparison.
-9. **Location Search**: Resolves Indian locations via Photon with latitude/longitude coordinates.
-10. **No Location Guard**: Prompts user to select a location; never silently defaults to Mumbai.
-11. **Native Hindi TTS**: Generates audio using macOS `Lekha` voice with >100KB base64 audio payload.
-12. **Duplicate Prevention**: Single-flight request locking ensures exactly 1 assistant response per query.
-13. **Ollama Unavailable**: Deterministic Python engine constructs complete, safe answers without 500 errors.
-14. **IMD Unavailable**: Gracefully falls back to crawled bulletin cache and Open-Meteo data.
-15. **Crawler Endpoints**: `GET /crawl/status` and `POST /crawl/run` execute successfully.
+Open [http://localhost:8501](http://localhost:8501) for the unified portal:
+1. **Conversational WeatherGPT**: Multi-lingual assistant with zero hallucination.
+2. **Farmer Offline Registration Portal**: Offline GPS/village registration & SQLite directory.
+3. **MacroDroid GSM Gateway Monitor**: GSM sequence visual guide & telephony simulator console.
 
 ---
 
-## 8. API Reference
+## 6. Running in PyCharm / VS Code
+
+1. Open the project root directory in your IDE.
+2. Select the Python interpreter inside `.venv`.
+3. Create a **FastAPI** run configuration:
+   - **Module**: `uvicorn`
+   - **Parameters**: `main:app --reload --port 8000`
+   - **Working directory**: `backend`
+4. Click **Run** or **Debug** to start with full breakpoint debugging.
+
+---
+
+## 7. API Reference
 
 | Method | Path | Description |
 | :--- | :--- | :--- |
@@ -230,26 +223,32 @@ WeatherGPT includes a comprehensive end-to-end automated verification suite cove
 | `GET` | `/location/search` | Search Indian cities, villages, and landmarks via Photon |
 | `GET` | `/location/reverse` | Reverse geocodes coordinates to canonical Indian location strings |
 | `POST` | `/language/tts` | High-fidelity text-to-speech audio synthesis (`Lekha` / Bhashini fallback) |
+| `POST` | `/webhook/sms` | Twilio / GSM inbound SMS gateway endpoint |
+| `POST` | `/webhook/voice` | Twilio / GSM voice call IVR entrypoint |
+| `POST` | `/webhook/voice/process` | ASR speech transcript processor with grounded advisory synthesis |
+| `GET` | `/ws/call-status` | WebSocket feed broadcasting live telephony call events |
 | `GET` | `/crawl/status` | Current crawler state, document count, and last sweep timestamp |
 | `POST` | `/crawl/run` | Triggers an immediate crawl cycle across official IMD endpoints |
 | `GET` | `/health` | System health check and service readiness |
 
 ---
 
-## 9. Hackathon Demonstration Walkthrough
+## 8. Hackathon Demonstration Walkthrough
 
 1. **Location Selection & Real-Time Weather**:
-   - Use GPS auto-detect or search for any Indian district (e.g., `Panaji, Goa` or `Bengaluru, Karnataka`).
+   - Use GPS auto-detect or search for any Indian district (e.g., `Panaji, Goa` or `Pune, Maharashtra`).
    - Observe live temperature, condition, rain chance, wind speed, and humidity sourced from Open-Meteo.
 2. **Authoritative Warnings**:
-   - Open the **Alerts** tab. Observe official IMD bulletins (e.g. NWFC All India Bulletins, Coastal Karnataka/Goa Orange alerts). Notice that there are zero demo alerts.
+   - Open the **Alerts** tab. Observe official IMD bulletins (e.g. NWFC All India Bulletins, District Warnings). Zero demo alerts.
 3. **Conversational Weather & Farming Advice**:
    - Ask: *"Can I spray pesticide today?"*
    - WeatherGPT inspects wind and rain risk deterministically and returns a clear recommendation.
 4. **Multilingual Speech & Devanagari Hindi**:
    - Switch language to **हिन्दी (Hindi)**.
    - Ask by voice or text: *"कल बारिश होगी क्या?"*
-   - Click **Read Aloud** — listen to native Hindi audio synthesized via `Lekha`.
-5. **Resilience & Offline Demo**:
-   - Stop Ollama (`pkill ollama`).
-   - Ask any weather or farming question — WeatherGPT's deterministic sentence engine returns a natural, grammatically correct answer instantly without any 500 error.
+   - Click **Read Aloud** to listen to native voice output.
+5. **Feature-Phone IVR Helpline & Simulator**:
+   - Use the **IVR Simulator** on the dashboard or test simulated inbound voice calls / SMS requests.
+   - Profile recognition automatically recalls registered farmers' villages without re-asking.
+6. **Resilience & Offline Demo**:
+   - Even without an external LLM running, WeatherGPT's deterministic Python engine constructs grammatically correct, safe answers instantly.

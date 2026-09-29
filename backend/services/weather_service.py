@@ -12,9 +12,11 @@ The LLM is NEVER the source of weather facts or coordinates.
 """
 
 import logging
+import re
 from typing import Any
 
 from services.location import photon_service
+from services.rag_service import INDIAN_STATES
 from services.weather.aggregator import aggregator
 
 logger = logging.getLogger(__name__)
@@ -81,8 +83,11 @@ async def get_current_and_forecast(
     if has_name and has_coords:
         is_outside_india = (lat > 38.5 or lat < 6.5 or lon < 68.0 or lon > 97.5)
         name_lower = req_loc_name.lower()
-        indian_cues = ["goa", "ponda", "shiroda", "panjim", "panaji", "margao", "mapusa", "maharashtra", "pune", "mumbai", "india", "karnataka", "delhi", "centre", "health"]
-        has_indian_cue = any(c in name_lower for c in indian_cues)
+        has_indian_cue = (
+            "india" in name_lower
+            or "bharat" in name_lower
+            or any(s in name_lower for s in INDIAN_STATES)
+        )
 
         if is_outside_india and has_indian_cue:
             logger.warning(
@@ -95,9 +100,16 @@ async def get_current_and_forecast(
                 logger.error("Failed to re-geocode '%s': %s", req_loc_name, e)
 
     # 2. Determine final location name and coordinates
-    if has_coords and not has_name:
+    is_numeric_name = bool(re.match(r"^\d{4,6}$", (req_loc_name or "").strip()))
+    if has_coords and (not has_name or is_numeric_name):
         location_details = await photon_service.reverse_geocode(lat, lon)
-        location_name = location_details.get("displayName") or f"Lat {lat:.2f}, Lon {lon:.2f}"
+        location_name = (
+            location_details.get("label")
+            or location_details.get("weather_location")
+            or location_details.get("admin_name")
+            or location_details.get("displayName")
+            or f"Lat {lat:.2f}, Lon {lon:.2f}"
+        )
         district = district or location_details.get("district", "")
         state = state or location_details.get("state", "")
     elif has_name and not has_coords:
@@ -114,6 +126,27 @@ async def get_current_and_forecast(
         state=state,
     )
 
+    # Section 11: Validate requested latitude/longitude vs weather latitude/longitude
+    w_lat = weather_data.get("latitude", lat)
+    w_lon = weather_data.get("longitude", lon)
+    if has_coords:
+        if abs(float(w_lat) - lat) > 0.5 or abs(float(w_lon) - lon) > 0.5:
+            logger.warning(
+                "Coordinate divergence detected: requested (%f, %f) vs weather (%f, %f). Re-fetching strictly by requested coordinates.",
+                lat, lon, w_lat, w_lon
+            )
+            weather_data = await aggregator.get_weather(
+                latitude=lat,
+                longitude=lon,
+                location_name=location_name,
+                district=district,
+                state=state,
+            )
+
+    # Ensure returned display location preserves the requested canonical name
+    if location_name:
+        weather_data["location"] = location_name
+
     # Attach Section 15 requested and retrieved location identity records
     weather_data["requested_location"] = {
         "name": location_name,
@@ -122,8 +155,8 @@ async def get_current_and_forecast(
     }
     weather_data["retrieved_location"] = {
         "name": weather_data.get("location", location_name),
-        "latitude": round(lat, 4),
-        "longitude": round(lon, 4),
+        "latitude": round(weather_data.get("latitude", lat), 4),
+        "longitude": round(weather_data.get("longitude", lon), 4),
     }
 
     return weather_data

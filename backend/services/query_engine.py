@@ -49,7 +49,8 @@ class StructuredQuery:
     activity: str | None = None
     location: str | None = None
     location_query: str | None = None
-    location_source: str = "app_selected"
+    query_location: str | None = None
+    location_source: str = "application"
     date_intent: str = "today"
     resolved_dates: list[str] = field(default_factory=list)
     primary_date: str = ""
@@ -315,9 +316,53 @@ ACTIVITY_PATTERNS = {
         r"(?:स्कूल पिकनिक|स्पोर्ट्स डे)",
         r"\b(?:school trip|sports day)\b",
     ],
+    "spraying": [
+        r"\b(?:spray|spraying|pesticide|pesticides|insecticide|fungicide|chemical|fertilizer)\b",
+        r"(?:छिड़काव|दवाई|दवा|कीटनाशक|कीटनाशक दवाई|स्प्रे)",
+        r"\b(?:chhidkaw|chhidkaav|dawa|dawai|spray|keetnashak)\b",
+        r"(?:फवारणी|कीटकनाशक|औषध)",
+    ],
+    "irrigation": [
+        r"\b(?:irrigate|irrigation|water|watering|soak)\b",
+        r"(?:सिंचाई|पानी देना|पानी लगाना|सिंचन)",
+        r"\b(?:sinchai|sinchayi|paani dena|pani lagana)\b",
+        r"(?:पाणी देणे|सिंचन)",
+    ],
+    "harvesting": [
+        r"\b(?<!rainwater\s)(?<!rain\s)(?<!water\s)(?:crop\s+harvesting|harvesting\s+crops?|harvest|harvesting|reaping|cutting crop)\b",
+        r"(?:फसल कटाई|फसल काटना|कटाई करना)",
+        r"\b(?:katai|fasal katna)\b",
+        r"(?:काढणी|पीक कापणे)",
+    ],
+    "sowing": [
+        r"\b(?:sow|sowing|seeding|plant seeds)\b",
+        r"(?:बुवाई|बोना|बीज बोना)",
+        r"\b(?:buwai|bona|beej bona)\b",
+        r"(?:पेरणी)",
+    ],
 }
 
 SUPPORTED_ACTIVITIES = {
+    "spraying": {
+        "labels": {"en": "spraying pesticides", "hi": "दवा का छिड़काव", "hi-Latn": "pesticide spraying"},
+        "required_fields": ["rain_probability", "wind_kmh", "condition"],
+        "requires_alerts": True,
+    },
+    "irrigation": {
+        "labels": {"en": "crop irrigation", "hi": "खेत की सिंचाई", "hi-Latn": "irrigation"},
+        "required_fields": ["rain_probability", "precipitation_mm", "temp_max"],
+        "requires_alerts": False,
+    },
+    "harvesting": {
+        "labels": {"en": "crop harvesting", "hi": "फसल कटाई", "hi-Latn": "crop harvesting"},
+        "required_fields": ["rain_probability", "condition", "wind_kmh"],
+        "requires_alerts": True,
+    },
+    "sowing": {
+        "labels": {"en": "crop sowing", "hi": "फसल की बुवाई", "hi-Latn": "sowing"},
+        "required_fields": ["rain_probability", "precipitation_mm", "temp_max"],
+        "requires_alerts": False,
+    },
     "fishing": {
         "labels": {"en": "fishing", "hi": "मछली पकड़ना", "hi-Latn": "fishing"},
         "required_fields": ["rain_probability", "wind_kmh", "condition", "marine_warnings", "precipitation_mm"],
@@ -468,7 +513,9 @@ def evaluate_activity_suitability(
     reasons = []
 
     marine_or_cyclone = any(
-        "cyclone" in str(a.get("category", "")).lower() or "cyclone" in str(a.get("hazard", "")).lower() or "marine" in str(a.get("hazard", "")).lower() or "squall" in str(a.get("message", "")).lower()
+        (a.get("is_official") or "imd" in str(a.get("source", "")).lower())
+        and a.get("severity") in ["RED", "ORANGE"]
+        and ("cyclone" in str(a.get("category", "")).lower() or "cyclone" in str(a.get("hazard", "")).lower() or "marine" in str(a.get("hazard", "")).lower() or "squall" in str(a.get("message", "")).lower())
         for a in alerts_data
     )
     severe_warning = any(a.get("severity") in ["RED", "ORANGE"] for a in alerts_data)
@@ -553,6 +600,53 @@ def evaluate_activity_suitability(
         else:
             status = "GOOD"
             reasons.append(f"Great playing conditions with {rain_p:.0f}% rain risk.")
+
+    elif activity in ["spraying", "pesticide_spraying"]:
+        if severe_warning or "thunder" in cond or wind > 20:
+            status = "NOT_RECOMMENDED"
+            reasons.append(f"High wind ({wind:.1f} km/h) or adverse weather will cause significant chemical drift.")
+        elif rain_p >= 40:
+            status = "NOT_RECOMMENDED"
+            reasons.append(f"Rain probability ({rain_p:.0f}%) is too high; rainfall will wash away chemicals.")
+        elif wind > 15 or rain_p >= 25:
+            status = "CAUTION"
+            reasons.append(f"Breeze ({wind:.1f} km/h) or slight rain chance ({rain_p:.0f}%); spray only during early morning calm.")
+        else:
+            status = "GOOD"
+            reasons.append(f"Calm winds ({wind:.1f} km/h) and low rain risk ({rain_p:.0f}%) provide suitable spraying conditions.")
+
+    elif activity in ["harvesting", "crop_harvesting"]:
+        if severe_warning or "thunder" in cond or rain_p >= 40:
+            status = "NOT_RECOMMENDED"
+            reasons.append(f"Rain probability ({rain_p:.0f}%) risks water damage and rotting of harvested crops.")
+        elif rain_p >= 25:
+            status = "CAUTION"
+            reasons.append(f"Moderate rain chance ({rain_p:.0f}%); ensure harvested produce can be quickly sheltered.")
+        else:
+            status = "GOOD"
+            reasons.append(f"Dry weather with low rain probability ({rain_p:.0f}%) is favorable for crop harvesting.")
+
+    elif activity in ["irrigation", "crop_irrigation"]:
+        if severe_warning or rain_p >= 50:
+            status = "NOT_RECOMMENDED"
+            reasons.append(f"Rain expected ({rain_p:.0f}%); postpone irrigation to prevent waterlogging and conserve water.")
+        elif rain_p >= 30:
+            status = "CAUTION"
+            reasons.append(f"Moderate chance of rain ({rain_p:.0f}%); consider holding off on heavy irrigation.")
+        else:
+            status = "GOOD"
+            reasons.append(f"Dry conditions; regular irrigation is recommended to maintain soil moisture.")
+
+    elif activity in ["sowing", "crop_sowing"]:
+        if severe_warning or rain_p >= 65:
+            status = "NOT_RECOMMENDED"
+            reasons.append(f"Heavy rain risk ({rain_p:.0f}%) can cause waterlogging and seed washout.")
+        elif rain_p <= 10 and t_max > 38:
+            status = "CAUTION"
+            reasons.append(f"High temperatures ({t_max:.1f}°C) and dry soil; ensure adequate moisture before sowing.")
+        else:
+            status = "GOOD"
+            reasons.append(f"Favorable conditions for crop sowing with {rain_p:.0f}% rain probability.")
 
     else:
         if severe_warning or rain_p >= 65:
@@ -979,9 +1073,18 @@ LOCATION_STOP_WORDS = {
     "yesterday", "morning", "afternoon", "evening", "night", "weekend", "week",
     "weather", "forecast", "rain", "raining", "rainy", "rainfall", "temp", "temperature",
     "humidity", "wind", "windy", "breeze", "storm", "cyclone", "alert", "alerts", "warning", "warnings",
+    "current", "currently", "live", "present", "daily", "weekly", "hourly", "general",
     "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
     "mon", "tue", "wed", "thu", "fri", "sat", "sun",
-    "picnic", "fishing", "hiking", "travel", "spray", "spraying", "irrigation", "farming",
+    # Activities and agricultural terms (NEVER treat as location names!)
+    "picnic", "fishing", "hiking", "travel", "traveling", "sports", "cricket", "match", "outdoor", "outdoors",
+    "spray", "spraying", "irrigation", "irrigate", "farming", "farm", "field", "fields", "crop", "crops",
+    "harvest", "harvesting", "sow", "sowing", "seed", "seeds", "seeding", "plant", "planting",
+    "pesticide", "pesticides", "insecticide", "insecticides", "fungicide", "fungicides", "chemical", "chemicals",
+    "fertilizer", "fertilizers", "plow", "plowing", "plough", "ploughing", "soil", "produce", "grain",
+    "rainwater", "rain-water", "water", "watering", "rice", "paddy", "wheat", "cotton", "vegetables",
+    # Evaluation, safety and question words
+    "safe", "safety", "good", "bad", "fine", "suitable", "suitability", "recommended", "right", "ok", "okay",
     "here", "there", "now", "me", "us", "my", "our", "near", "nearby", "around", "area", "local", "place",
     "this", "that", "the", "a", "an", "all", "any", "some",
     "what", "whats", "how", "hows", "is", "will", "can", "should", "could", "would", "tell",
@@ -993,6 +1096,24 @@ LOCATION_STOP_WORDS = {
     "मौसम", "बारिश", "वर्षा", "तापमान", "गर्मी", "ठंड", "हवा",
     "हवामान", "पाऊस", "उद्या", "आयज", "फाल्यां", "कसा", "कशी", "कसे", "काय",
     "kaisa", "kaisi", "kaise", "kya", "hoga", "hogi", "rahega", "rahegi", "hai", "hain", "paas",
+    # Indic agricultural and activity words
+    "dawa", "dawai", "chhidkaw", "chhidkaav", "sinchai", "sinchayi", "katai", "buwai", "bona", "kheti", "fasal",
+    "छिड़काव", "दवाई", "दवा", "कीटनाशक", "सिंचाई", "पानी", "कटाई", "फसल", "बुवाई", "बोना", "बीज", "खेती", "किसान", "खेत",
+    "धान", "गेहूँ", "गेहूं", "कपास", "सब्जी", "फवारणी", "काढणी", "पेरणी", "शेती", "सुरक्षित", "सही", "उचित",
+    # Hindi/Indic postpositions, prepositions and particles (CRITICAL: never treat as locations!)
+    "का", "के", "की", "में", "से", "पर", "को", "ने", "हे", "हो", "था", "थी", "थे",
+    "वाला", "वाली", "वाले", "बारे", "दौरान", "बताना", "बताओ", "दिखाओ", "बताएं", "दीजिए",
+    # Marathi/Konkani particles
+    "चा", "ची", "चे", "च्या", "चो", "चें", "मध्ये", "मधील", "वर", "खातीर", "सांगा", "दाखवा",
+    # English/Roman Hindi particles
+    "ka", "ke", "ki", "mein", "me", "se", "par", "ko", "ne", "baare", "baarein",
+    "in", "at", "of", "for", "on", "by", "to", "from", "about", "with", "into", "onto",
+}
+
+TEMPORAL_QUERY_WORDS = {
+    "today", "todays", "today's", "tomorrow", "tomorrows", "tomorrow's", "yesterday",
+    "aaj", "kal", "parso", "subah", "shaam", "dopahar", "raat",
+    "आज", "कल", "परसों", "सुबह", "शाम", "दोपहर", "रात", "उद्या", "आयज", "फाल्यां",
 }
 
 
@@ -1005,6 +1126,8 @@ def extract_query_location(query: str) -> str | None:
       - 'will it rain in Bengaluru tomorrow?' -> 'Bengaluru'
       - 'Panaji me kal mausam' -> 'Panaji'
       - 'पणजी में मौसम कैसा है' -> 'पणजी'
+    Strictly avoids false positives on activities (e.g. 'safe for harvesting'),
+    temporal queries (e.g. 'आज का मौसम', 'today's weather'), and non-geographic words.
     """
     q_clean = query.strip()
     if not q_clean:
@@ -1014,25 +1137,46 @@ def extract_query_location(query: str) -> str | None:
     if re.search(r"\b(?:near|around|for)\s+(?:me|here|us)\b", q_clean, re.IGNORECASE):
         return None
 
-    # 1. Pattern: (in|at|of|for) <Location> [(tomorrow|today|...)]
-    prep_match = re.search(
-        r"\b(?:in|at|of|for)\s+([A-Za-z\u0900-\u0DFF]+(?:\s+[A-Za-z\u0900-\u0DFF]+)?)\b",
-        q_clean,
-        re.IGNORECASE,
-    )
+    # 1. Pattern: (in|at|for) <Location>
+    # IMPORTANT: "for" only introduces a location when preceded by query inquiry terms like "weather for", "forecast for", "alerts for"
+    # Purpose/activity clauses like "safe for harvesting", "good for picnic", "time for spraying" MUST NOT be treated as locations.
+    prep_match = None
+    is_activity_for = bool(re.search(r"\b(?:safe|good|bad|suitable|ideal|best|ready|time|plans?)\s+for\b", q_clean, re.IGNORECASE))
+    is_weather_for = bool(re.search(r"\b(?:weather|forecast|alerts?|warnings?|conditions?|mausam|temperature)\s+for\b", q_clean, re.IGNORECASE))
+
+    if not is_activity_for and is_weather_for:
+        prep_match = re.search(
+            r"\bfor\s+([A-Za-z\u0900-\u0DFF]+(?:\s+[A-Za-z\u0900-\u0DFF]+)?)\b",
+            q_clean,
+            re.IGNORECASE,
+        )
+    if not prep_match:
+        prep_match = re.search(
+            r"\b(?:in|at)\s+([A-Za-z\u0900-\u0DFF]+(?:\s+[A-Za-z\u0900-\u0DFF]+)?)\b",
+            q_clean,
+            re.IGNORECASE,
+        )
+
     if prep_match:
         cand = prep_match.group(1).strip()
         words = cand.split()
         filtered = [w for w in words if w.lower() not in LOCATION_STOP_WORDS]
         if filtered:
             loc = " ".join(filtered)
-            if loc.lower() not in LOCATION_STOP_WORDS and len(loc) >= 2:
+            loc_low = loc.lower()
+            # Must not be a stopword, temporal word, gerund ending in "ing" (unless known place), or too short
+            is_invalid = (
+                loc_low in LOCATION_STOP_WORDS
+                or any(tw in loc_low for tw in TEMPORAL_QUERY_WORDS)
+                or (loc_low.endswith("ing") and loc_low not in {"darjeeling", "kalimpong"})
+                or len(loc) < 3
+            )
+            if not is_invalid:
                 return loc
 
-    # 2. Pattern: <Location> (mein|ka|ke|ki|cha|che|chi|cho|त|मध्ये|मधील|में|चो|चे)
-    # Require location candidate to not be an English word preceding pronoun 'me'
+    # 2. Pattern: <Location> (mein|ka|ke|ki|cha|che|chi|cho|त|मध्ये|मधील|में|चो|चे|च्या|तील|साठी)
     indic_match = re.search(
-        r"\b(?<!near\s)(?<!around\s)(?<!tell\s)(?<!with\s)([A-Za-z\u0900-\u0DFF]+(?:\s+[A-Za-z\u0900-\u0DFF]+)?)\s+(?:mein?|ka|ke|ki|cha|che|chi|cho|में|चे|चो|च्या|तील)\b",
+        r"\b(?<!near\s)(?<!around\s)(?<!tell\s)(?<!with\s)([A-Za-z\u0900-\u0DFF]+(?:\s+[A-Za-z\u0900-\u0DFF]+)?)\s+(?:mein?|में|मध्ये|मधील|चे|चो|च्या|तील|त|ात|तले|का|के|की|साठी)\b",
         q_clean,
         re.IGNORECASE,
     )
@@ -1041,7 +1185,14 @@ def extract_query_location(query: str) -> str | None:
         words = [w for w in cand.split() if w.lower() not in LOCATION_STOP_WORDS]
         if words:
             loc = " ".join(words)
-            if loc.lower() not in LOCATION_STOP_WORDS and len(loc) >= 2:
+            loc_low = loc.lower()
+            is_invalid = (
+                loc_low in LOCATION_STOP_WORDS
+                or any(tw in loc_low for tw in TEMPORAL_QUERY_WORDS)
+                or (loc_low.endswith("ing") and loc_low not in {"darjeeling", "kalimpong"})
+                or len(loc) < 3
+            )
+            if not is_invalid:
                 return loc
 
     # 3. Pattern: <Location> weather / <Location> forecast / <Location> mausam
@@ -1052,16 +1203,40 @@ def extract_query_location(query: str) -> str | None:
     )
     if lead_match:
         cand = lead_match.group(1).strip()
-        words = [w for w in cand.split() if w.lower() not in LOCATION_STOP_WORDS]
-        if words:
-            loc = " ".join(words)
-            if loc.lower() not in LOCATION_STOP_WORDS and len(loc) >= 2:
-                return loc
+        if not any(tw in cand.lower() for tw in TEMPORAL_QUERY_WORDS):
+            words = [w for w in cand.split() if w.lower() not in LOCATION_STOP_WORDS]
+            if words:
+                loc = " ".join(words)
+                loc_low = loc.lower()
+                is_invalid = (
+                    loc_low in LOCATION_STOP_WORDS
+                    or any(tw in loc_low for tw in TEMPORAL_QUERY_WORDS)
+                    or (loc_low.endswith("ing") and loc_low not in {"darjeeling", "kalimpong"})
+                    or len(loc) < 3
+                )
+                if not is_invalid:
+                    return loc
 
-    # 4. Check known gazetteer places mentioned anywhere in query
+    # 4. Check Devanagari and multilingual place names (Marathi / Hindi / Regional)
+    try:
+        from services.language_service import LOCATION_PLACES_MAP
+        sorted_places = sorted(LOCATION_PLACES_MAP.items(), key=lambda x: len(x[0]), reverse=True)
+        for eng_place, trans_dict in sorted_places:
+            for l_code, dev_name in trans_dict.items():
+                dev_clean = dev_name.strip()
+                if len(dev_clean) >= 2:
+                    dev_base = dev_clean.rstrip("ेाीुू")
+                    if dev_clean in q_clean or (len(dev_base) >= 2 and f"{dev_base}ात" in q_clean) or (len(dev_base) >= 2 and f"{dev_base}्यात" in q_clean):
+                        return eng_place.title()
+    except Exception:
+        pass
+
+    # 5. Check known Latin gazetteer places mentioned anywhere in query
     from services.location.photon_service import INDIAN_AGRICULTURAL_GAZETTEER, PHONETIC_ALIASES
     q_words = [w.strip("?,.!") for w in q_clean.lower().split()]
     for word in q_words:
+        if word in LOCATION_STOP_WORDS:
+            continue
         if word in INDIAN_AGRICULTURAL_GAZETTEER:
             return INDIAN_AGRICULTURAL_GAZETTEER[word]["name"]
         if word in PHONETIC_ALIASES:
@@ -1206,6 +1381,21 @@ def understand_query(
                     last_activity = act_cand
                     break
 
+        # If last_intent or last_domain was not explicit in message dict, infer from last_user_query
+        if not last_intent and last_user_query:
+            if any(ws in last_user_query for ws in ["weather", "forecast", "mausam", "havaman"]):
+                last_intent = "forecast" if ("tomorrow" in last_user_query or "weekend" in last_user_query) else "general_weather"
+                last_domain = "weather"
+            elif any(ws in last_user_query for ws in ["rain", "barish", "baarish"]):
+                last_intent = "rain"
+                last_domain = "weather"
+            elif any(ws in last_user_query for ws in ["temp", "temperature", "tapman"]):
+                last_intent = "temperature"
+                last_domain = "weather"
+            elif last_activity:
+                last_intent = "activity_forecast"
+                last_domain = "outdoor_activity"
+
     prev_context_str = f"{last_user_query} {last_assistant_answer}" if inherit_context else ""
     prev_had_tomorrow = any(kw in prev_context_str for kw in ["tomorrow", "kal", "कल", "उद्या", "काल", "நாளை", "రేపు"])
 
@@ -1296,7 +1486,7 @@ def understand_query(
 
     # 5. Ambiguous Query Detection (without follow-up context)
     is_ambiguous_match = any(re.search(pat, q_lower) for pat in AMBIGUOUS_PATTERNS)
-    if is_ambiguous_match and not (is_follow_up and (last_activity or last_intent)):
+    if is_ambiguous_match and not (is_follow_up and (last_activity or last_intent or last_domain)):
         from services import language_service
         lang = language_service.detect_language(q_clean)
         clarification_map = {
@@ -1358,11 +1548,16 @@ def understand_query(
         matched_activity = last_activity
 
     if matched_activity:
-        domain = "weather_dependent_life"
         activity = matched_activity
-        intent = "activity_forecast"
         sub_intent = matched_activity
         requires_activity = True
+        if matched_activity in ["spraying", "irrigation", "harvesting", "sowing"]:
+            domain = "agriculture"
+            intent = matched_activity
+            requires_agriculture = True
+        else:
+            domain = "weather_dependent_life"
+            intent = "activity_forecast"
 
     # A. Comparison Intent
     else:
@@ -1438,7 +1633,7 @@ def understand_query(
 
         # C. Rain Forecast Intent
         elif bool(re.search(
-            r"\b(?:rain|raining|rainy|rainfall|shower|showers|drizzle|umbrella|wet|downpour|precipitation)\b|"
+            r"\b(?:rain|raining|rainy|rainfall|rainwater|rainwater\s+harvesting|shower|showers|drizzle|umbrella|wet|downpour|precipitation)\b|"
             r"(?:बारिश|बरसात|वर्षा|बूंदाबांदी|पानी बरसेगा|छाता|भीगना)|"
             r"\b(?:baarish|barish|barsat|paani barsega|chaata|chata|chhaata|chhatri)\b|"
             r"(?:पाऊस|रिमझिम|छत्री|વરસાદ|বৃষ্টি)",
@@ -1453,25 +1648,38 @@ def understand_query(
             else:
                 sub_intent = "general_rain"
 
-        # D. Agriculture Intent
-        elif bool(re.search(
-            r"\b(?:spray|spraying|pesticide|pesticides|insecticide|fungicide|chemical|fertilizer|irrigate|irrigation|water|watering|harvest|harvesting|sow|sowing|seed|crop|crops|farm|farming|farmer)\b|"
+        # D. Agriculture Intent (excluding non-agricultural rainwater harvesting)
+        elif not any(rh in q_lower for rh in ["rainwater harvesting", "rain harvesting", "water harvesting", "rainwater"]) and bool(re.search(
+            r"\b(?:spray|spraying|pesticide|pesticides|insecticide|fungicide|chemical|fertilizer|irrigate|irrigation|water\s+crops?|watering\s+crops?|harvest|harvesting|sow|sowing|seed|crop|crops|farm|farming|farmer)\b|"
             r"(?:छिड़काव|दवाई|दवा|कीटनाशक|सिंचाई|पानी देना|कटाई|फसल|बुवाई|बोना|बीज|खेती|किसान)|"
             r"\b(?:chhidkaw|chhidkaav|dawa|dawai|spray|keetnashak|sinchai|sinchayi|katai|buwai|kheti|fasal)\b|"
             r"(?:फवारणी|कीटकनाशक|औषध|सिंचन|काढणी|पेरणी|शेती)",
             q_lower
         )):
             domain = "agriculture"
-            intent = "agriculture"
-            if bool(re.search(r"\b(?:spray|spraying|pesticide|pesticides|insecticide|fungicide|chemical|fertilizer)\b|(?:छिड़काव|दवाई|दवा|कीटनाशक)|\b(?:chhidkaw|chhidkaav|spray)\b|(?:फवारणी)", q_lower)):
-                sub_intent = "spraying"
-            elif bool(re.search(r"\b(?:irrigate|irrigation|water|watering)\b|(?:सिंचाई|पानी देना)|\b(?:sinchai|sinchayi)\b|(?:सिंचन)", q_lower)):
-                sub_intent = "irrigation"
-            elif bool(re.search(r"\b(?:sow|sowing|seed|seeds)\b|(?:बुवाई|बोना|बीज)|\b(?:buwai|bona)\b|(?:पेरणी)", q_lower)):
-                sub_intent = "sowing"
-            elif bool(re.search(r"\b(?:harvest|harvesting|reaping)\b|(?:कटाई|फसल काटना)|\b(?:katai)\b|(?:काढणी)", q_lower)):
+            requires_agriculture = True
+            if not any(rh in q_lower for rh in ["rainwater harvesting", "rain harvesting", "water harvesting", "rainwater"]) and bool(re.search(r"\b(?<!rainwater\s)(?<!rain\s)(?<!water\s)(?:harvest|harvesting|reaping)\b|(?:कटाई|फसल काटना)|\b(?:katai)\b|(?:काढणी)", q_lower)):
+                intent = "harvesting"
                 sub_intent = "harvesting"
+                activity = "harvesting"
+                requires_activity = True
+            elif bool(re.search(r"\b(?:irrigate|irrigation|water|watering)\b|(?:सिंचाई|पानी देना)|\b(?:sinchai|sinchayi)\b|(?:सिंचन)", q_lower)):
+                intent = "irrigation"
+                sub_intent = "irrigation"
+                activity = "irrigation"
+                requires_activity = True
+            elif bool(re.search(r"\b(?:spray|spraying|pesticide|pesticides|insecticide|fungicide|chemical|fertilizer)\b|(?:छिड़काव|दवाई|दवा|कीटनाशक)|\b(?:chhidkaw|chhidkaav|spray)\b|(?:फवारणी)", q_lower)):
+                intent = "spraying"
+                sub_intent = "spraying"
+                activity = "spraying"
+                requires_activity = True
+            elif bool(re.search(r"\b(?:sow|sowing|seed|seeds)\b|(?:बुवाई|बोना|बीज)|\b(?:buwai|bona)\b|(?:पेरणी)", q_lower)):
+                intent = "sowing"
+                sub_intent = "sowing"
+                activity = "sowing"
+                requires_activity = True
             else:
+                intent = "agriculture"
                 sub_intent = "general_agriculture"
 
         # E. Temperature Intent
@@ -1667,7 +1875,8 @@ def understand_query(
         activity=activity,
         location=extracted_loc or (last_location if is_follow_up else None),
         location_query=extracted_loc,
-        location_source="query" if extracted_loc else "app_selected",
+        query_location=extracted_loc,
+        location_source="query" if extracted_loc else "application",
         date_intent=date_intent,
         resolved_dates=resolved_dates,
         primary_date=primary_date,
@@ -2199,36 +2408,60 @@ def build_verified_context(
 
 def format_conversational_location(loc_name: str, language: str = "en") -> str:
     """
-    Formulates a concise, human-natural location reference (e.g. 'Primary Health Centre, Shiroda, Ponda' or 'Panaji')
-    instead of repeating strange postal PIN codes (e.g. 403108) or entire postal addresses.
+    Formulates a concise, human-natural location reference (e.g. 'Shiroda, Ponda' or 'Panaji' or 'Tiswadi, Goa')
+    instead of repeating strange postal PIN codes or commercial facility/POI names (e.g. 'Primary Health Centre').
     """
+    fallback = "आपके क्षेत्र" if language in ["hi", "mr", "kok"] else "your area"
     if not loc_name or not str(loc_name).strip():
-        return "आपके क्षेत्र" if language in ["hi", "mr", "kok"] else "your area"
+        return fallback
 
-    parts = [p.strip() for p in str(loc_name).split(",") if p.strip()]
+    str_loc = str(loc_name).strip()
+
+    # Check if the entire string is just a numeric PIN code or raw coordinate
+    if re.match(r"^(\d{4,6}|lat\b|\d+\.\d+)", str_loc, re.I):
+        return fallback
+
+    parts = [p.strip() for p in str_loc.split(",") if p.strip()]
     if not parts:
-        return loc_name
+        return fallback
 
-    # Filter out numeric-only PIN codes or coordinates
-    clean_parts = [p for p in parts if not re.match(r"^(\d{4,6}|lat\b|\d+\.\d+)", p, re.I)]
+    # Filter out numeric-only PIN codes, coordinates, or postal code tags
+    clean_parts = [
+        p for p in parts
+        if not re.match(r"^(\d{4,6}|lat\b|\d+\.\d+)", p, re.I)
+        and not re.search(r"\b\d{4,6}\b", p)
+    ]
     if not clean_parts:
-        clean_parts = parts
+        return fallback
 
     # Remove country suffix if multiple parts exist
     if len(clean_parts) > 1 and clean_parts[-1].lower() in ["india", "भारत"]:
         clean_parts = clean_parts[:-1]
 
+    # Strip facility / amenity / POI names so the weather location is the actual geographic/administrative place
+    POI_STRIP_TERMS = (
+        "primary health centre", "health centre", "health center", "phc", "sub centre",
+        "hospital", "clinic", "dispensary", "rainwater harvesting", "harvesting",
+        "school", "college", "university", "institute", "resort", "hotel", "restaurant",
+        "temple", "church", "mosque", "bank", "atm", "studio", "hair studio", "shop", "store",
+        "office", "panchayat office", "railway station", "bus stand", "bus stop",
+    )
+    while len(clean_parts) > 1 and any(poi_term in clean_parts[0].lower() for poi_term in POI_STRIP_TERMS):
+        clean_parts = clean_parts[1:]
+
+    # Final check: make sure clean_parts[0] is not pure digits
+    if re.match(r"^\d{4,6}$", clean_parts[0]):
+        clean_parts = clean_parts[1:]
+        if not clean_parts:
+            return fallback
+
     if len(clean_parts) == 1:
         return clean_parts[0]
 
-    if len(clean_parts) == 2:
+    if len(clean_parts) >= 2:
         return f"{clean_parts[0]}, {clean_parts[1]}"
 
-    # If 3 or more parts (e.g. ['Primary Health Centre', 'Shiroda', 'Ponda', 'Goa'])
-    if "primary health centre" in clean_parts[0].lower():
-        return ", ".join(clean_parts[:3])
-
-    return f"{clean_parts[0]}, {clean_parts[1]}"
+    return fallback
 
 
 def generate_human_deterministic_answer(
@@ -2247,7 +2480,17 @@ def generate_human_deterministic_answer(
     """
     if verified_context is None:
         p_query = parsed_query or {}
-        loc_str = location if isinstance(location, str) else (location.get("name", "आपके क्षेत्र") if isinstance(location, dict) else "आपके क्षेत्र")
+        loc_str = "your area"
+        if isinstance(location, str) and location.strip():
+            c_str = location.strip()
+            if not re.match(r"^\d{4,6}$", c_str):
+                loc_str = c_str
+        elif isinstance(location, dict):
+            for key in ["label", "admin_label", "weather_location", "admin_name", "name", "displayName"]:
+                val = str(location.get(key) or "").strip()
+                if val and not re.match(r"^\d{4,6}$", val):
+                    loc_str = val
+                    break
         intent = p_query.get("intent", "general_weather")
         temporal = p_query.get("temporal_target", p_query.get("temporal", "today"))
         tw = dict(temporal_info or {})
@@ -2311,74 +2554,95 @@ def generate_human_deterministic_answer(
             suit = act_suit.get("suitability", "GOOD") if act_suit else "GOOD"
             wind = tw.get("wind_kmh", 12)
             if activity == "fishing":
+                reasons_list = act_suit.get("reasons", []) if act_suit else []
+                has_official_warn = any("Official marine/cyclone warning active" in r for r in reasons_list)
                 if suit == "NOT_RECOMMENDED":
-                    return f"{loc_short} में {time_word} मछली पकड़ने (fishing) जाना सुरक्षित नहीं है। बारिश की संभावना {rain_p} प्रतिशत और हवा की गति {wind} किलोमीटर प्रति घंटा रहने का अनुमान है। मौसम साफ होने तक प्रतीक्षा करें।"
+                    if has_official_warn:
+                        return f"{loc_short} में {time_word} आधिकारिक समुद्री/चक्रवात चेतावनी सक्रिय होने के कारण समुद्र में जाना सुरक्षित नहीं है। हवा की गति {wind} km/h और बारिश की संभावना {rain_p}% रहने का अनुमान है।"
+                    return f"{loc_short} में {time_word} मछली पकड़ने जाना सुरक्षित नहीं है। बारिश की संभावना {rain_p}% और हवा की गति {wind} km/h रहने का अनुमान है। मौसम साफ होने तक प्रतीक्षा करें।"
                 elif suit == "CAUTION":
-                    return f"{loc_short} में {time_word} मछली पकड़ने जाते समय सावधानी बरतें। हवा की गति {wind} किलोमीटर प्रति घंटा और बारिश की संभावना {rain_p} प्रतिशत रहने का अनुमान है। तटीय मौसम पर नजर रखें।"
+                    return f"{loc_short} में {time_word} मछली पकड़ने जाते समय सावधानी बरतें। हवा की गति {wind} km/h और बारिश की संभावना {rain_p}% रहने का अनुमान है। तटीय मौसम पर नजर रखें।"
                 else:
-                    return f"{loc_short} में {time_word} मछली पकड़ने के लिए मौसम बहुत अच्छा और अनुकूल है। हवा शांत ({wind} किलोमीटर प्रति घंटा) है और बारिश का खतरा केवल {rain_p} प्रतिशत है।"
+                    return f"{loc_short} में {time_word} मछली पकड़ने के लिए मौसम बहुत अच्छा और अनुकूल है। हवा शांत ({wind} km/h) है और बारिश का खतरा केवल {rain_p}% है।"
             else:
                 if suit == "NOT_RECOMMENDED":
-                    return f"{loc_short} में {time_word} {act_label_hi} के लिए मौसम अनुकूल नहीं है। बारिश की संभावना {rain_p} प्रतिशत है और मौसम {cond} रहेगा।"
+                    return f"{loc_short} में {time_word} {act_label_hi} के लिए मौसम अनुकूल नहीं है। बारिश की संभावना {rain_p}% है और मौसम {cond} रहेगा।"
                 elif suit == "CAUTION":
-                    return f"{loc_short} में {time_word} {act_label_hi} के दौरान सावधानी बरतने की सलाह दी जाती है। बारिश की संभावना {rain_p} प्रतिशत है।"
+                    return f"{loc_short} में {time_word} {act_label_hi} के दौरान थोड़ी सावधानी बरतें। बारिश की संभावना करीब {rain_p}% है।"
                 else:
-                    return f"{loc_short} में {time_word} {act_label_hi} के लिए मौसम पूरी तरह अनुकूल है। मौसम {cond} रहेगा और बारिश की संभावना केवल {rain_p} प्रतिशत है।"
+                    return f"{loc_short} में {time_word} {act_label_hi} के लिए मौसम पूरी तरह अनुकूल है। मौसम {cond} रहेगा और बारिश की संभावना केवल {rain_p}% है।"
 
         if "morning" in temporal:
             temp_avg = tw.get("temp_avg", 26.0)
             is_tom = "tomorrow" in temporal
             day_str = "कल सुबह" if is_tom else "आज सुबह"
             if rain_p >= 50:
-                return f"{loc_short} में {day_str} हल्की से मध्यम बारिश (बारिश की संभावना {rain_p} प्रतिशत) की संभावना है। तापमान लगभग {temp_avg} डिग्री सेल्सियस रहेगा। अगर सुबह बाहर निकलना हो तो छाता अवश्य साथ रखें।"
+                return f"{loc_short} में {day_str} बारिश की संभावना करीब {rain_p}% है और तापमान {temp_avg}°C रहेगा। सुबह बाहर निकल रहे हैं तो छाता साथ रखना बेहतर रहेगा।"
             else:
-                return f"{loc_short} में {day_str} मौसम सुहावना और साफ़ रहेगा। बारिश की संभावना केवल {rain_p} प्रतिशत है और तापमान लगभग {temp_avg} डिग्री सेल्सियस रहने की संभावना है। सुबह के समय बाहरी काम निपटाना सबसे अच्छा रहेगा।"
+                return f"{loc_short} में {day_str} मौसम सुहावना और साफ़ रहेगा। बारिश की संभावना केवल {rain_p}% है और तापमान {temp_avg}°C रहने का अनुमान है। सुबह का समय बाहरी काम निपटाने के लिए सबसे अच्छा रहेगा।"
 
         if "afternoon" in temporal:
             temp_max = tw.get("temp_max", 31.0)
             day_str = "कल दोपहर" if "tomorrow" in temporal else "आज दोपहर"
-            return f"{loc_short} में {day_str} मौसम {cond} रहेगा और अधिकतम तापमान {temp_max} डिग्री सेल्सियस तक पहुँच सकता है। बारिश की संभावना {rain_p} प्रतिशत है।"
+            return f"{loc_short} में {day_str} मौसम {cond} रहेगा और अधिकतम तापमान {temp_max}°C तक पहुँच सकता है। बारिश की संभावना {rain_p}% है।"
 
         if "evening" in temporal:
             day_str = "कल शाम" if "tomorrow" in temporal else "आज शाम"
-            return f"{loc_short} में {day_str} मौसम {cond} रहेगा। बारिश की संभावना {rain_p} प्रतिशत है और हल्की हवा चलेगी।"
+            return f"{loc_short} में {day_str} मौसम {cond} रहेगा। बारिश की संभावना {rain_p}% है और हल्की हवा चलेगी।"
 
-        if intent in ["spraying", "agriculture"]:
-            verdict = derived.get("spray_safe", "SAFE")
-            if verdict == "UNSAFE":
-                return f"{loc_short} में {time_word} कीटनाशक या दवा का छिड़काव करना उचित नहीं रहेगा, क्योंकि बारिश की संभावना {rain_p} प्रतिशत है और तेज हवा या बारिश से दवा बहने का खतरा है। मौसम साफ होने की प्रतीक्षा करें।"
-            elif verdict == "CAUTION":
-                return f"{loc_short} में {time_word} दवा का छिड़काव सुबह के शांत समय में ही करें। बारिश की संभावना {rain_p} प्रतिशत है, इसलिए सावधानी बरतना जरूरी है।"
+        if intent == "harvesting" or (intent == "agriculture" and sub_intent == "harvesting"):
+            if rain_p >= 40:
+                return f"{loc_short} में {time_word} बारिश की {rain_p}% संभावना को देखते हुए कटी हुई फसल को भीगने से बचाएं और कटाई का काम थोड़ा टालें।"
             else:
-                return f"{loc_short} में {time_word} दवा छिड़काव के लिए मौसम बिल्कुल अनुकूल है। हवा की गति शांत है और बारिश का खतरा केवल {rain_p} प्रतिशत है।"
+                return f"{loc_short} में {time_word} फसल कटाई के लिए मौसम अनुकूल है। बारिश का खतरा कम ({rain_p}%) है, इसलिए कटी फसल को सुरक्षित स्थान पर सुखाया जा सकता है।"
 
-        if intent == "irrigation":
+        if intent == "irrigation" or (intent == "agriculture" and sub_intent == "irrigation"):
             if rain_p >= 50:
-                return f"{loc_short} में {time_word} खेत में सिंचाई टालना बेहतर रहेगा, क्योंकि {rain_p} प्रतिशत बारिश की संभावना है। प्राकृतिक वर्षा से मिट्टी को पर्याप्त नमी मिल जाएगी।"
+                return f"{loc_short} में {time_word} खेत में सिंचाई करने से पहले बारिश का पूर्वानुमान देख लें। बारिश की संभावना {rain_p}% है, इसलिए सिंचाई टालना बेहतर रहेगा ताकि जलभराव न हो।"
             else:
                 return f"{loc_short} में {time_word} खेत में आवश्यकतानुसार हल्की सिंचाई कर सकते हैं। सुबह या शाम के ठंडे समय में पानी देना फसलों के लिए लाभकारी रहेगा।"
 
-        if intent == "harvesting":
-            if rain_p >= 40:
-                return f"{loc_short} में {time_word} बारिश की {rain_p} प्रतिशत संभावना को देखते हुए कटी हुई फसल को भीगने से बचाएं और कटाई का काम थोड़ा टालें।"
+        if intent == "spraying" or (intent == "agriculture" and sub_intent == "spraying"):
+            verdict = derived.get("spray_safe", "SAFE")
+            if verdict == "UNSAFE":
+                return f"{loc_short} में {time_word} बारिश की संभावना अधिक ({rain_p}%) है, इसलिए दवा या कीटनाशक का छिड़काव टालना बेहतर रहेगा ताकि दवा बह न जाए।"
+            elif verdict == "CAUTION":
+                return f"{loc_short} में {time_word} दवा का छिड़काव सुबह के शांत समय में ही करें। बारिश की संभावना {rain_p}% है, इसलिए सावधानी बरतें।"
             else:
-                return f"{loc_short} में {time_word} फसल कटाई के लिए मौसम अनुकूल है। बारिश का खतरा कम ({rain_p} प्रतिशत) है, इसलिए कटी फसल को सुरक्षित स्थान पर सुखाया जा सकता है।"
+                return f"{loc_short} में {time_word} दवा या कीटनाशक छिड़काव के लिए मौसम अनुकूल है। हवा की गति शांत है और बारिश का खतरा केवल {rain_p}% है।"
+
+        if intent == "sowing" or (intent == "agriculture" and sub_intent == "sowing"):
+            if rain_p >= 60:
+                return f"{loc_short} में {time_word} भारी बारिश ({rain_p}%) के जोखिम को देखते हुए बुवाई का काम टालना बेहतर रहेगा।"
+            else:
+                return f"{loc_short} में {time_word} फसल बुवाई के लिए मौसम अनुकूल है। पर्याप्त नमी के साथ बुवाई का कार्य कर सकते हैं।"
+
+        if intent == "agriculture":
+            if rain_p >= 50:
+                return f"{loc_short} में {time_word} बारिश की संभावना {rain_p}% है। खेतों में जल निकासी की व्यवस्था रखें और आवश्यक कृषि कार्य सावधानीपूर्वक करें।"
+            else:
+                return f"{loc_short} में {time_word} कृषि कार्यों के लिए मौसम सामान्य और अनुकूल है। बारिश का खतरा केवल {rain_p}% है।"
 
         q_raw = (verified_context.get("raw_query") or verified_context.get("query") or "").lower()
         sub_intent = verified_context.get("sub_intent", "")
-        if intent == "cyclone" or (intent in ["alerts", "warning"] and (sub_intent == "cyclone" or "cyclone" in q_raw or "चक्रवात" in q_raw)):
+        if intent == "cyclone" or (intent in ["alerts", "warning"] and (sub_intent == "cyclone" or "cyclone" in q_raw or "चक्रवात" in q_raw or "marine" in q_raw or "समुद्री" in q_raw)):
             warnings = verified_context.get("warnings", [])
-            cyclone_warnings = [w for w in warnings if "cyclone" in str(w.get("category", "")).lower() or "cyclone" in str(w.get("hazard", "")).lower()]
+            cyclone_warnings = [
+                w for w in warnings
+                if ("cyclone" in str(w.get("category", "")).lower() or "cyclone" in str(w.get("hazard", "")).lower() or "marine" in str(w.get("hazard", "")).lower())
+                and w.get("severity") in ["ORANGE", "RED"]
+            ]
             if cyclone_warnings:
                 msg = cyclone_warnings[0].get("message", "")
                 return f"मौसम विभाग (IMD) चक्रवात बुलेटिन: {loc_short} के लिए चेतावनी: {msg}। मछुआरों को समुद्र में न जाने की सलाह दी जाती है।"
-            return f"मौसम विभाग (IMD) के अनुसार वर्तमान में {loc_short} के लिए किसी भी चक्रवाती तूफान का कोई सक्रिय खतरा नहीं है। मौसमी गतिविधियों पर निरंतर नजर रखी जा रही है।"
+            return f"मौसम विभाग (IMD) के अनुसार वर्तमान में {loc_short} के लिए कोई भी आधिकारिक समुद्री या चक्रवात चेतावनी सक्रिय नहीं है। मौसमी गतिविधियां सामान्य हैं।"
 
         if intent in ["warning", "alerts", "alert"]:
             warnings = verified_context.get("warnings", [])
-            if warnings:
-                msg = warnings[0].get("message", "")
-                haz = warnings[0].get("hazard", "मौसम चेतावनी")
+            official_warnings = [w for w in warnings if w.get("severity") in ["ORANGE", "RED"]]
+            if official_warnings:
+                msg = official_warnings[0].get("message", "")
+                haz = official_warnings[0].get("hazard", "मौसम चेतावनी")
                 return f"मौसम विभाग (IMD) आधिकारिक चेतावनी: {loc_short} के लिए {haz}: {msg}। कृपया आवश्यक सावधानी बरतें।"
             return f"{loc_short} के लिए वर्तमान में मौसम विभाग (IMD) की कोई भी सक्रिय आधिकारिक चेतावनी नहीं पाई गई है। मौसम सामान्य और सुरक्षित है।"
 
@@ -2390,14 +2654,14 @@ def generate_human_deterministic_answer(
             if days and len(days) >= 2:
                 d1 = days[0]
                 d2 = days[1]
-                return f"{loc_short} में {d1.get('date')} को अधिकतम तापमान {d1.get('temp_max')} डिग्री सेल्सियस (बारिश {d1.get('rain_probability')} प्रतिशत) और {d2.get('date')} को तापमान {d2.get('temp_max')} डिग्री सेल्सियस रहेगा।"
-            return f"{loc_short} में आने वाले दिनों में तापमान 24.0 डिग्री सेल्सियस से 31.0 डिग्री सेल्सियस के बीच सामान्य बना रहेगा।"
+                return f"{loc_short} में {d1.get('date')} को अधिकतम तापमान {d1.get('temp_max')}°C (बारिश {d1.get('rain_probability')}%) और {d2.get('date')} को तापमान {d2.get('temp_max')}°C रहेगा।"
+            return f"{loc_short} में आने वाले दिनों में तापमान 24.0°C से 31.0°C के बीच सामान्य बना रहेगा।"
 
         if intent == "outdoor_activity" or intent == "travel":
             if rain_p >= 50:
-                return f"{loc_short} में {time_word} बारिश की संभावना {rain_p} प्रतिशत है और मौसम {cond} रहेगा। यात्रा या बाहरी काम के समय छाता साथ रखें।"
+                return f"{loc_short} में {time_word} बारिश की संभावना करीब {rain_p}% है और मौसम {cond} रहेगा। यात्रा या बाहरी काम के समय छाता साथ रखना बेहतर रहेगा।"
             else:
-                return f"{loc_short} में {time_word} बाहर जाने या काम के लिए मौसम बहुत अच्छा है। मौसम {cond} रहेगा और बारिश का खतरा बहुत कम ({rain_p} प्रतिशत) है।"
+                return f"{loc_short} में {time_word} बाहर जाने या काम के लिए मौसम बहुत अच्छा है। मौसम {cond} रहेगा और बारिश का खतरा बहुत कम ({rain_p}%) है।"
 
         if intent in ["rain", "rain_forecast"]:
             t_max = tw.get("temp_max", tw.get("current_temp", 29.0))
@@ -2407,42 +2671,50 @@ def generate_human_deterministic_answer(
             is_umbrella = sub_intent == "umbrella" or any(w in q_raw for w in ["umbrella", "छाता", "chata", "chhaata", "chhatri"])
             if is_umbrella:
                 if rain_p >= 50:
-                    return f"{loc_short} में {time_word} बारिश होने की संभावना काफी अधिक ({rain_p} प्रतिशत) है। बाहर जाते समय छाता अवश्य साथ रखें।"
+                    return f"{loc_short} में {time_word} बारिश की संभावना काफी अधिक (करीब {rain_p}%) है। बाहर निकलते समय छाता अवश्य साथ रखें।"
                 elif rain_p >= 30:
-                    return f"{loc_short} में {time_word} हल्की बारिश की मध्यम संभावना ({rain_p} प्रतिशत) है। एहतियात के तौर पर छाता साथ रख सकते हैं।"
+                    return f"{loc_short} में {time_word} हल्की बारिश की मध्यम संभावना (करीब {rain_p}%) है। एहतियात के तौर पर छाता साथ रखना बेहतर रहेगा।"
                 else:
-                    return f"{loc_short} में {time_word} बारिश की संभावना बहुत कम ({rain_p} प्रतिशत) है। छाते की आवश्यकता नहीं होगी।"
+                    return f"{loc_short} में {time_word} बारिश की संभावना बहुत कम ({rain_p}%) है। छाते की आवश्यकता नहीं होगी।"
             else:
                 if rain_p >= 50:
-                    return f"हाँ, {loc_short} में {time_word} बारिश होने की संभावना काफी अधिक ({rain_p} प्रतिशत) है। मौसम {cond} रहेगा और तापमान {t_min} डिग्री सेल्सियस से {t_max} डिग्री सेल्सियस रहेगा। छाता साथ रखना आवश्यक रहेगा।"
+                    return f"हाँ, {loc_short} में {time_word} बारिश की संभावना काफी अधिक (करीब {rain_p}%) है। मौसम {cond} रहेगा और तापमान {t_min}°C से {t_max}°C के बीच रहेगा। बाहर निकलते समय छाता साथ रखें।"
                 elif rain_p >= 30:
-                    return f"{loc_short} में {time_word} हल्की बारिश या बूंदाबांदी की मध्यम संभावना ({rain_p} प्रतिशत) है। मौसम {cond} रहेगा।"
+                    return f"{loc_short} में {time_word} हल्की बारिश या बूंदाबांदी की मध्यम संभावना (करीब {rain_p}%) है। मौसम {cond} रहेगा।"
                 else:
-                    return f"नहीं, {loc_short} में {time_word} बारिश की संभावना बहुत कम ({rain_p} प्रतिशत) है। मौसम {cond} रहेगा और तापमान {t_max} डिग्री सेल्सियस तक रहेगा। छाते की आवश्यकता नहीं है।"
+                    return f"नहीं, {loc_short} में {time_word} बारिश की संभावना बहुत कम ({rain_p}%) है। मौसम {cond} रहेगा और तापमान करीब {t_max}°C तक रहेगा। छाते की आवश्यकता नहीं है।"
 
         if intent == "temperature":
             cur_t = tw.get("current_temp", tw.get("temp_avg", 28.0))
             t_max = tw.get("temp_max", 30.0)
             t_min = tw.get("temp_min", 24.0)
             if "tomorrow" in temporal:
-                return f"{loc_short} में कल का अधिकतम तापमान {t_max} डिग्री सेल्सियस और न्यूनतम तापमान {t_min} डिग्री सेल्सियस रहने की संभावना है।"
-            return f"{loc_short} में वर्तमान तापमान {cur_t} डिग्री सेल्सियस है। आज का अधिकतम तापमान {t_max} डिग्री सेल्सियस और न्यूनतम तापमान {t_min} डिग्री सेल्सियस रहने की संभावना है।"
+                return f"{loc_short} में कल का अधिकतम तापमान {t_max}°C और न्यूनतम तापमान {t_min}°C रहने की संभावना है।"
+            return f"{loc_short} में वर्तमान तापमान {cur_t}°C है। आज का अधिकतम तापमान {t_max}°C और न्यूनतम तापमान {t_min}°C रहने का अनुमान है।"
 
         # General Weather Overview
         t_max = tw.get("temp_max", 29.4)
         t_min = tw.get("temp_min", 23.8)
         cur_t = tw.get("current_temp", 28.8)
         hum = tw.get("humidity", 78)
-        verb = "रहेगी" if any(w in cond for w in ["बूंदाबांदी", "बारिश", "वर्षा", "धूप"]) else "रहेगा"
-        if "बादल छाए" in cond or cond == "बादल छाए हुए हैं":
-            cond_phrase = "बादल छाए रहेंगे"
-        else:
-            cond_phrase = f"{cond} {verb}"
         if time_word == "कल":
-            return f"{loc_short} में कल {cond_phrase}। अधिकतम तापमान {t_max} डिग्री सेल्सियस और न्यूनतम तापमान {t_min} डिग्री सेल्सियस रहने की संभावना है। बारिश की संभावना {rain_p} प्रतिशत रहेगी।"
+            if rain_p >= 50:
+                rain_text = f"कल बारिश की संभावना काफी अधिक (करीब {rain_p}%) है, इसलिए बाहर निकलते समय छाता साथ रखें।"
+            elif rain_p >= 20:
+                rain_text = f"कल हल्की बारिश की संभावना (करीब {rain_p}%) है।"
+            else:
+                rain_text = f"बारिश की संभावना बहुत कम ({rain_p}%) है।"
+            return f"{loc_short} में कल मौसम {cond} रहने का अनुमान है। अधिकतम तापमान करीब {t_max}°C और न्यूनतम {t_min}°C रहेगा। {rain_text}"
         elif time_word == "इस सप्ताहांत":
-            return f"{loc_short} में इस सप्ताहांत {cond_phrase}। अधिकतम तापमान {t_max} डिग्री सेल्सियस और बारिश की संभावना {rain_p} प्रतिशत रहने का अनुमान है।"
-        return f"{loc_short} में आज {cond_phrase}। अधिकतम तापमान {t_max} डिग्री सेल्सियस और न्यूनतम तापमान {t_min} डिग्री सेल्सियस रहने की संभावना है। बारिश की संभावना {rain_p} प्रतिशत है। वर्तमान तापमान {cur_t} डिग्री सेल्सियस है और हवा में नमी {hum} प्रतिशत है।"
+            return f"{loc_short} में इस सप्ताहांत मौसम {cond} रहने का अनुमान है। अधिकतम तापमान करीब {t_max}°C और बारिश की संभावना {rain_p}% रहेगी।"
+        else:
+            if rain_p >= 50:
+                rain_text = f"आज बारिश की संभावना करीब {rain_p}% है। बाहर निकल रहे हैं तो छाता साथ रखना बेहतर रहेगा।"
+            elif rain_p >= 20:
+                rain_text = f"आज हल्की बारिश की संभावना (करीब {rain_p}%) है।"
+            else:
+                rain_text = f"बारिश की संभावना बहुत कम ({rain_p}%) है और मौसम सामान्य रहेगा।"
+            return f"{loc_short} में आज मौसम {cond} रहेगा। अधिकतम तापमान करीब {t_max}°C और न्यूनतम {t_min}°C रहने का अनुमान है। {rain_text} वर्तमान तापमान {cur_t}°C और हवा में नमी {hum}% है।"
 
     # -----------------------------------------------------------------------
     # HINGLISH (Roman Hindi / hi-Latn)
@@ -2470,11 +2742,33 @@ def generate_human_deterministic_answer(
             temp_avg = tw.get("temp_avg", 26.0)
             day_str = "kal subah" if "tomorrow" in temporal else "aaj subah"
             return f"{loc_short} me {day_str} mausam {cond} rahega aur rainfall chances lagbhag {rain_p}% hain. Temperature around {temp_avg}°C rahega. Subah ka time bahar ke kaamon ke liye best hai."
-        if intent in ["spraying", "agriculture"]:
+        if intent == "harvesting" or (intent == "agriculture" and sub_intent == "harvesting"):
+            if rain_p >= 40:
+                return f"{loc_short} me {time_word} baarish ke {rain_p}% chances ko dekhte hue fasal ki katai thoda postpone karein aur kaati hui fasal ko cover karein."
+            return f"{loc_short} me {time_word} fasal katai (harvesting) ke liye mausam favorable hai. Rain risk low ({rain_p}%) hai."
+
+        if intent == "irrigation" or (intent == "agriculture" and sub_intent == "irrigation"):
+            if rain_p >= 50:
+                return f"{loc_short} me {time_word} sinchai (irrigation) postpone karein, kyunki baarish ke {rain_p}% chances hain aur paani bharne ka risk hai."
+            return f"{loc_short} me {time_word} routine sinchai ke liye mausam theek hai. Subah ya shaam ke waqt paani dena behtar rahega."
+
+        if intent == "spraying" or (intent == "agriculture" and sub_intent == "spraying"):
             verdict = derived.get("spray_safe", "SAFE")
             if verdict == "UNSAFE":
                 return f"{loc_short} me {time_word} keetnashak dawai ka spray na karein, kyunki baarish ke chances {rain_p}% hain aur dawai behne ka khatra hai."
+            elif verdict == "CAUTION":
+                return f"{loc_short} me {time_word} dawai ka spray subah shant hawa me hi karein. Rain risk {rain_p}% hai."
             return f"{loc_short} me {time_word} spraying ke liye mausam theek hai, hawa shant hai aur rain risk low ({rain_p}%) hai."
+
+        if intent == "sowing" or (intent == "agriculture" and sub_intent == "sowing"):
+            if rain_p >= 60:
+                return f"{loc_short} me {time_word} heavy rain ({rain_p}%) ke chalte buwai (sowing) postpone karna behtar rahega."
+            return f"{loc_short} me {time_word} buwai ke liye mausam favorable hai."
+
+        if intent == "agriculture":
+            if rain_p >= 50:
+                return f"{loc_short} me {time_word} kheti ke kaamon me baarish ({rain_p}%) ka dhyan rakhein aur drainage ka intezam rakhein."
+            return f"{loc_short} me {time_word} kheti ke kaamon ke liye mausam normal aur favorable hai."
         if intent == "rain":
             if rain_p >= 50:
                 return f"Haan, {loc_short} me {time_word} baarish ke kaafi high chances ({rain_p}%) hain. Mausam {cond} rahega, isliye bahar jaate waqt chhaata zaroor saath rakhein."
@@ -2511,10 +2805,30 @@ def generate_human_deterministic_answer(
                     return f"{loc_short} येथे {time_word_mr} {activity} साठी हवामान अनुकूल नाही. पावसाची शक्यता {rain_p}% आहे."
                 else:
                     return f"{loc_short} येथे {time_word_mr} {activity} साठी हवामान अनुकूल आहे. पावसाची शक्यता {rain_p}% आहे."
-        if intent in ["spraying", "agriculture"]:
+        if intent == "harvesting" or (intent == "agriculture" and sub_intent == "harvesting"):
+            if rain_p >= 40:
+                return f"{loc_short} येथे {time_word_mr} पावसाच्या {rain_p}% शक्यतेमुळे पीक काढणीचे काम पुढे ढकलावे आणि काढलेले पीक सुरक्षित झाकून ठेवावे."
+            return f"{loc_short} येथे {time_word_mr} पीक काढणीसाठी हवामान अनुकूल आहे. पावसाचा धोका कमी ({rain_p}%) आहे."
+
+        if intent == "irrigation" or (intent == "agriculture" and sub_intent == "irrigation"):
             if rain_p >= 50:
+                return f"{loc_short} येथे {time_word_mr} शेतात पाणी देणे (सिंचन) पुढे ढकलावे, कारण पावसाची शक्यता {rain_p}% आहे."
+            return f"{loc_short} येथे {time_word_mr} आवश्यकतेनुसार पिकांना हलके पाणी देऊ शकता."
+
+        if intent == "spraying" or (intent == "agriculture" and sub_intent == "spraying"):
+            if rain_p >= 40:
                 return f"{loc_short} येथे {time_word_mr} पिकांवर औषध फवारणी करू नये, कारण पावसाची शक्यता {rain_p}% आहे आणि औषध वाहून जाण्याचा धोका आहे."
-            return f"{loc_short} येथे {time_word_mr} औषध फवारणीसाठी हवामान अनुकूल आहे. पावसाची शक्यता {rain_p}% आहे."
+            return f"{loc_short} येथे {time_word_mr} औषध फवारणीसाठी हवामान अनुकूल आहे. वाऱ्याचा वेग शांत असून पावसाची शक्यता केवळ {rain_p}% आहे."
+
+        if intent == "sowing" or (intent == "agriculture" and sub_intent == "sowing"):
+            if rain_p >= 60:
+                return f"{loc_short} येथे {time_word_mr} जास्त पावसाच्या ({rain_p}%) शक्यतेमुळे पेरणीचे काम पुढे ढकलावे."
+            return f"{loc_short} येथे {time_word_mr} पेरणीसाठी हवामान अनुकूल आहे."
+
+        if intent == "agriculture":
+            if rain_p >= 50:
+                return f"{loc_short} येथे {time_word_mr} पावसाची शक्यता {rain_p}% असल्याने शेतीची कामे काळजीपूर्वक करावीत."
+            return f"{loc_short} येथे {time_word_mr} शेतीच्या कामांसाठी हवामान सामान्य आणि अनुकूल आहे."
         if intent == "rain":
             if rain_p >= 50:
                 return f"होय, {loc_short} येथे {time_word_mr} पावसाची शक्यता जास्त ({rain_p} टक्के) आहे. हवामान {cond} राहील. बाहेर पडताना छत्री सोबत ठेवा."
@@ -2570,7 +2884,11 @@ def generate_human_deterministic_answer(
         reason_str = f" ({'; '.join(reasons_list)})" if reasons_list else ""
 
         if activity == "fishing":
+            reasons_list = act_suit.get("reasons", []) if act_suit else []
+            has_official_warn = any("Official marine/cyclone warning active" in r for r in reasons_list)
             if suit == "NOT_RECOMMENDED":
+                if has_official_warn:
+                    return f"In {loc_short}, fishing is not recommended {time_word} due to an active official marine/cyclone warning. Expected conditions: {cond_en}, winds around {wind} km/h, and a {rain_p}% chance of rain."
                 return f"In {loc_short}, fishing is not recommended {time_word}{reason_str}. Expected conditions: {cond_en}, winds around {wind} km/h, and a {rain_p}% chance of rain."
             elif suit == "CAUTION":
                 return f"In {loc_short}, exercise caution if going fishing {time_word}{reason_str}. Expect {cond_en}, winds of {wind} km/h, and a {rain_p}% chance of rain."
@@ -2599,7 +2917,17 @@ def generate_human_deterministic_answer(
         day_str = "tomorrow evening" if "tomorrow" in temporal else "this evening"
         return f"In {loc_short}, {day_str} will be {cond_en} with temperatures around {tw.get('temp_avg', 27.0)}°C and a {rain_p}% chance of rain."
 
-    if intent in ["spraying", "agriculture"]:
+    if intent == "harvesting" or (intent == "agriculture" and sub_intent == "harvesting"):
+        if rain_p >= 40:
+            return f"With a {rain_p}% chance of rain in {loc_short} {time_word}, protect harvested produce and consider postponing outdoor harvest work."
+        return f"Weather conditions in {loc_short} are favorable for harvesting {time_word}, with low rain risk ({rain_p}%) and dry spells."
+
+    if intent == "irrigation" or (intent == "agriculture" and sub_intent == "irrigation"):
+        if rain_p >= 50:
+            return f"Postpone field irrigation in {loc_short} {time_word}. The {rain_p}% chance of incoming rain will replenish soil moisture naturally and avoid waterlogging."
+        return f"Routine irrigation is safe in {loc_short} {time_word}. Water during the cooler morning or evening hours for optimal absorption."
+
+    if intent == "spraying" or (intent == "agriculture" and sub_intent == "spraying"):
         verdict = derived.get("spray_safe", "SAFE")
         if verdict == "UNSAFE":
             return f"It is not recommended to spray pesticides in {loc_short} {time_word} due to a {rain_p}% chance of rain and gusty winds, which could wash away or drift the chemicals."
@@ -2607,15 +2935,15 @@ def generate_human_deterministic_answer(
             return f"In {loc_short}, exercise caution when spraying {time_word}. Calm early morning hours are preferred, with a {rain_p}% rain chance."
         return f"Weather conditions in {loc_short} are suitable for spraying {time_word}, with calm winds and a low {rain_p}% risk of rain."
 
-    if intent == "irrigation":
-        if rain_p >= 50:
-            return f"Postpone field irrigation in {loc_short} {time_word}. The {rain_p}% chance of incoming rain will replenish soil moisture naturally and avoid waterlogging."
-        return f"Routine irrigation is safe in {loc_short} {time_word}. Water during the cooler morning or evening hours for optimal absorption."
+    if intent == "sowing" or (intent == "agriculture" and sub_intent == "sowing"):
+        if rain_p >= 60:
+            return f"Delay sowing operations in {loc_short} {time_word} due to a {rain_p}% chance of heavy rain, which could wash away seeds."
+        return f"Weather conditions in {loc_short} are favorable for crop sowing {time_word}, with moderate conditions and low rain risk ({rain_p}%)."
 
-    if intent == "harvesting":
-        if rain_p >= 40:
-            return f"With a {rain_p}% chance of rain in {loc_short} {time_word}, protect harvested produce and consider postponing outdoor harvest work."
-        return f"Weather conditions in {loc_short} are favorable for harvesting {time_word}, with low rain risk ({rain_p}%) and dry spells."
+    if intent == "agriculture":
+        if rain_p >= 50:
+            return f"In {loc_short} {time_word}, anticipate rain with a {rain_p}% probability; ensure proper field drainage for standing crops."
+        return f"In {loc_short} {time_word}, weather conditions are generally favorable for farm activities with a low {rain_p}% rain risk."
 
     if intent in ["outdoor_activity", "travel"]:
         if rain_p >= 50:
@@ -2687,13 +3015,17 @@ def generate_human_deterministic_answer(
 
     q_raw = (verified_context.get("raw_query") or verified_context.get("query") or "").lower()
     sub_intent = verified_context.get("sub_intent", "")
-    if intent == "cyclone" or (intent in ["alerts", "warning"] and (sub_intent == "cyclone" or "cyclone" in q_raw)):
+    if intent == "cyclone" or (intent in ["alerts", "warning"] and (sub_intent == "cyclone" or "cyclone" in q_raw or "marine" in q_raw)):
         warnings = verified_context.get("warnings", [])
-        cyclone_warnings = [w for w in warnings if "cyclone" in str(w.get("category", "")).lower() or "cyclone" in str(w.get("hazard", "")).lower()]
+        cyclone_warnings = [
+            w for w in warnings
+            if ("cyclone" in str(w.get("category", "")).lower() or "cyclone" in str(w.get("hazard", "")).lower() or "marine" in str(w.get("hazard", "")).lower())
+            and w.get("severity") in ["ORANGE", "RED"]
+        ]
         if cyclone_warnings:
             msg = cyclone_warnings[0].get("message", "")
             return f"Official IMD Cyclone Advisory: Active alert for {loc_short} sector: {msg}. Fishermen and coastal operations should follow safety guidelines."
-        return f"According to authoritative IMD bulletins, there is currently no active cyclone or cyclonic storm threatening {loc_short}. Normal weather monitoring is underway."
+        return f"No verified official marine or cyclone warning was found for {loc_short}."
 
     if intent == "comparison":
         comp = derived.get("comparison")
@@ -2708,9 +3040,10 @@ def generate_human_deterministic_answer(
 
     if intent in ["warning", "alerts", "alert"]:
         warnings = verified_context.get("warnings", [])
-        if warnings:
-            msg = warnings[0].get("message", "")
-            haz = warnings[0].get("hazard", "Weather Warning")
+        official_warnings = [w for w in warnings if w.get("severity") in ["ORANGE", "RED"]]
+        if official_warnings:
+            msg = official_warnings[0].get("message", "")
+            haz = official_warnings[0].get("hazard", "Weather Warning")
             return f"Official IMD Warning for {loc_short}: {haz} — {msg}. Please follow local disaster management guidance."
         return f"No active official IMD warning was found for {loc_short}. Weather conditions remain normal."
 
@@ -2809,12 +3142,27 @@ def validate_llm_answer(
         has_act = any(lbl in cleaned_lower for lbl in labels)
         if not has_act:
             return False, f"Activity mismatch: response failed to address the requested activity '{req_act}'."
+
+        # Cross-activity purity check: ensure harvesting response does not discuss spraying, and vice versa
+        if req_act == "harvesting":
+            if any(w in cleaned_lower for w in ["spray", "spraying", "pesticide", "छिड़काव", "कीटनाशक"]):
+                return False, "Cross-activity contamination: spraying advice detected in harvesting response."
+        elif req_act == "spraying":
+            if any(w in cleaned_lower for w in ["harvest", "harvesting", "कटाई"]):
+                return False, "Cross-activity contamination: harvesting advice detected in spraying response."
+        elif req_act == "irrigation":
+            if any(w in cleaned_lower for w in ["spray", "pesticide", "harvest", "छिड़काव", "कटाई"]):
+                return False, "Cross-activity contamination: unrelated agricultural advice in irrigation response."
     else:
-        # If no activity was requested, ensure the answer doesn't hallucinate an activity like picnic or fishing
+        # If no activity was requested, ensure the answer doesn't hallucinate an activity
         domain = verified_context.get("domain", "")
         intent = verified_context.get("intent", "")
         if domain == "weather" and intent in ["general_weather", "current_weather", "temperature", "rain_forecast"]:
-            if any(act_word in cleaned_lower for act_word in ["picnic", "fishing", "मछली पकड़ने", "पिकनिक", "मासेमारी"]):
+            if any(act_word in cleaned_lower for act_word in [
+                "picnic", "fishing", "मछली पकड़ने", "पिकनिक", "मासेमारी",
+                "spray", "spraying", "pesticide", "कीटनाशक", "छिड़काव",
+                "harvest", "harvesting", "कटाई", "irrigate", "irrigation", "सिंचाई"
+            ]):
                 return False, "Contamination: unrequested activity mentioned in general weather answer."
 
     # Warning vs Forecast integrity: if user asked for weather/forecast, do not accept a warning-only bulletin
@@ -2824,27 +3172,39 @@ def validate_llm_answer(
         if cleaned.startswith("Official IMD Warning") or cleaned.startswith("Official IMD Cyclone Advisory"):
             return False, "Contamination: Official warning bulletin returned when forecast was requested."
 
+    # Official Warning Validation: The chatbot must NEVER invent or infer an official warning.
+    # An official warning can ONLY be stated when verified by the backend.
+    warnings = verified_context.get("warnings", [])
+    has_active_official = any(
+        (w.get("is_official") or "imd" in str(w.get("source", "")).lower()) and w.get("severity") in ["ORANGE", "RED"]
+        for w in warnings
+    )
+    if not has_active_official:
+        hallucinated_warning_phrases = [
+            "official marine warning",
+            "official cyclone warning",
+            "official warning active",
+            "official imd warning active",
+            "cyclone warning active",
+            "marine warning active",
+            "आधिकारिक समुद्री चेतावनी",
+            "आधिकारिक चक्रवात चेतावनी",
+            "आधिकारिक चेतावनी सक्रिय",
+        ]
+        if any(phrase in cleaned_lower for phrase in hallucinated_warning_phrases):
+            return False, "Hallucinated official warning: response claims an official warning is active when verified context has no active official warnings."
+
     # Location integrity check:
     loc_canonical = verified_context.get("location", {}).get("canonical", "")
     loc_name = verified_context.get("location", {}).get("name", "")
     full_loc_context = f"{loc_canonical} {loc_name}".lower()
 
-    # Never randomly mention Mumbai unless Mumbai was actually part of the location
-    if "mumbai" in cleaned_lower or "मुंबई" in cleaned:
-        if "mumbai" not in full_loc_context and "मुंबई" not in full_loc_context:
-            return False, "Hallucinated location 'Mumbai' detected."
-
-    # Strict foreign location check: reject answers containing England, United Kingdom, Gillian Thompson, Beverley
-    foreign_loc_keywords = ["england", "united kingdom", "gillian thompson", "beverley", "hair studio", "molescroft"]
-    if any(k in cleaned_lower for k in foreign_loc_keywords):
-        if not any(k in full_loc_context for k in foreign_loc_keywords):
-            return False, "Foreign location leakage (e.g. England / Gillian Thompson) detected."
-
-    # If Panjim was requested, ensure answer does not refer to Ponda
-    loc_query = verified_context.get("location_query") or ""
-    if "panjim" in loc_query.lower() or "panaji" in loc_query.lower():
-        if re.search(r"\bponda\b", cleaned_lower) and not re.search(r"\bpanaj?i|panjim\b", cleaned_lower):
-            return False, "Location override failed: answer refers to Ponda when Panjim was requested."
+    # Foreign location leakage check (reject foreign country names when Indian location is requested)
+    is_indian_loc = "india" in full_loc_context or "भारत" in full_loc_context
+    if is_indian_loc:
+        foreign_loc_keywords = ["england", "united kingdom", "great britain", "london"]
+        if any(k in cleaned_lower for k in foreign_loc_keywords) and not any(k in full_loc_context for k in foreign_loc_keywords):
+            return False, "Foreign location leakage detected."
 
     # When Hindi is selected, reject any leaked English words (Latin script)
     if language == "hi":
@@ -2864,10 +3224,10 @@ def validate_location_identity(
     retrieved_location: dict[str, Any] | str,
 ) -> tuple[bool, str]:
     """
-    Validates Section 15 location identity:
-    1. Rejects foreign locations (e.g. England, UK, Beverley, Gillian Thompson) when Indian location requested.
+    Validates Section 15 location identity dynamically without hardcoded place names:
+    1. Rejects foreign locations when Indian location requested.
     2. Verifies coordinates match within acceptable tolerance (within ~55 km / 0.5 deg).
-    3. Rejects provider responses that clearly belong to another location.
+    3. Rejects provider responses that clearly belong to another unrelated location.
     """
     req_name = ""
     req_lat = None
@@ -2893,7 +3253,7 @@ def validate_location_identity(
     req_lower = req_name.lower()
 
     # 1. Foreign location rejection
-    foreign_keywords = ["england", "united kingdom", "gillian thompson", "beverley", "woodhall way"]
+    foreign_keywords = ["england", "united kingdom", "great britain"]
     if any(k in ret_lower for k in foreign_keywords) and not any(k in req_lower for k in foreign_keywords):
         return False, f"Retrieved location '{ret_name}' contains foreign location data."
 
@@ -2906,5 +3266,16 @@ def validate_location_identity(
                 return False, f"Coordinate divergence ({req_lat},{req_lon}) vs ({ret_lat},{ret_lon}) exceeds threshold."
         except (ValueError, TypeError):
             pass
+
+    # 3. Dynamic unrelated location mismatch check
+    req_tokens = {w for w in re.findall(r"\w+", req_lower) if len(w) >= 4 and w not in {"india", "state", "district", "taluka"}}
+    ret_tokens = {w for w in re.findall(r"\w+", ret_lower) if len(w) >= 4 and w not in {"india", "state", "district", "taluka"}}
+    if req_tokens and ret_tokens and not (req_tokens & ret_tokens):
+        if req_lat is not None and ret_lat is not None:
+            try:
+                if abs(float(req_lat) - float(ret_lat)) > 0.5 or abs(float(req_lon) - float(ret_lon)) > 0.5:
+                    return False, f"Location mismatch: requested '{req_name}' but retrieved '{ret_name}'."
+            except (ValueError, TypeError):
+                pass
 
     return True, "PASS"

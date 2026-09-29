@@ -10,6 +10,65 @@ import {
   IconChevronRight,
 } from './Icons';
 
+export function normalizeLocation(item, source = 'search') {
+  if (!item) return null;
+  const lat = parseFloat(item.latitude ?? item.lat);
+  const lon = parseFloat(item.longitude ?? item.lon);
+  if (isNaN(lat) || isNaN(lon)) return null;
+
+  const postcode = (item.postcode || '').toString().trim();
+  let name = (item.name || '').toString().trim();
+  const label = (item.label || '').toString().trim();
+  const displayName = (item.displayName || '').toString().trim();
+  const adminLabel = (item.admin_label || item.weather_location || '').toString().trim();
+
+  // If name is pure digits (PIN code), derive geographic name from city/district/state or label
+  if (/^\d{4,6}$/.test(name)) {
+    const geoParts = [item.city, item.district, item.state].filter(
+      (p) => p && typeof p === 'string' && !/^\d{4,6}$/.test(p.trim())
+    );
+    name = geoParts.length > 0 ? geoParts[0].trim() : (label.split(',')[0].trim() || 'Selected Area');
+  }
+
+  // Canonical clean geographic label (never standalone PIN)
+  let resolvedLabel = label && !/^\d{4,6}$/.test(label)
+    ? label
+    : (adminLabel && !/^\d{4,6}$/.test(adminLabel) ? adminLabel : (name || `${lat.toFixed(3)}°N, ${lon.toFixed(3)}°E`));
+
+  if (/^\d{4,6}$/.test(resolvedLabel.trim())) {
+    resolvedLabel = `${lat.toFixed(3)}°N, ${lon.toFixed(3)}°E`;
+  }
+
+  const resolvedDisplayName = displayName && !/^\d{4,6}$/.test(displayName)
+    ? displayName
+    : (postcode && !resolvedLabel.includes(postcode) ? `${resolvedLabel} (${postcode})` : resolvedLabel);
+
+  const state = item.state || '';
+  const shortLabel = item.short_label || (state && !name.toLowerCase().includes(state.toLowerCase())
+    ? `${name}, ${state}`
+    : name);
+
+  return {
+    id: `${lat.toFixed(4)},${lon.toFixed(4)}`,
+    latitude: lat,
+    longitude: lon,
+    lat: lat,
+    lon: lon,
+    name: name || resolvedLabel.split(',')[0].trim(),
+    short_label: shortLabel,
+    label: resolvedLabel,
+    displayName: resolvedDisplayName,
+    weather_location: adminLabel && !/^\d{4,6}$/.test(adminLabel) ? adminLabel : resolvedLabel,
+    admin_label: adminLabel && !/^\d{4,6}$/.test(adminLabel) ? adminLabel : resolvedLabel,
+    city: item.city || '',
+    district: item.district || '',
+    state: state,
+    country: item.country || 'India',
+    postcode: postcode,
+    source: source,
+  };
+}
+
 export default function LocationModal({ isOpen, onSelectLocation, onClose, canClose }) {
   const { t } = useLanguage();
 
@@ -19,6 +78,8 @@ export default function LocationModal({ isOpen, onSelectLocation, onClose, canCl
   const [isGpsLoading, setIsGpsLoading] = useState(false);
   const [gpsError, setGpsError] = useState('');
   const searchTimeoutRef = useRef(null);
+  const abortControllerRef = useRef(null);
+  const activeQueryRef = useRef('');
   const inputRef = useRef(null);
 
   useEffect(() => {
@@ -26,13 +87,23 @@ export default function LocationModal({ isOpen, onSelectLocation, onClose, canCl
       setQuery('');
       setResults([]);
       setGpsError('');
+      activeQueryRef.current = '';
       setTimeout(() => inputRef.current?.focus(), 150);
     }
   }, [isOpen]);
 
-  // Debounced Photon location search
+  // Debounced Photon location search with stale request cancellation (350ms)
   useEffect(() => {
     const trimmed = query.trim();
+    activeQueryRef.current = trimmed;
+
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+    }
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+
     if (!trimmed || trimmed.length < 2) {
       setResults([]);
       setIsSearching(false);
@@ -40,21 +111,26 @@ export default function LocationModal({ isOpen, onSelectLocation, onClose, canCl
     }
 
     setIsSearching(true);
-    if (searchTimeoutRef.current) {
-      clearTimeout(searchTimeoutRef.current);
-    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
 
     searchTimeoutRef.current = setTimeout(async () => {
       try {
-        const data = await searchLocations(trimmed);
-        setResults(data?.results || []);
+        const data = await searchLocations(trimmed, controller.signal);
+        if (activeQueryRef.current === trimmed) {
+          setResults(data?.results || []);
+        }
       } catch (err) {
-        console.warn('Search locations failed:', err);
-        setResults([]);
+        if (activeQueryRef.current === trimmed) {
+          console.warn('Search locations failed:', err);
+          setResults([]);
+        }
       } finally {
-        setIsSearching(false);
+        if (activeQueryRef.current === trimmed) {
+          setIsSearching(false);
+        }
       }
-    }, 300);
+    }, 350);
 
     return () => {
       if (searchTimeoutRef.current) {
@@ -79,35 +155,24 @@ export default function LocationModal({ isOpen, onSelectLocation, onClose, canCl
           const lat = pos.coords.latitude;
           const lon = pos.coords.longitude;
           const rev = await reverseGeocodeLocation(lat, lon);
-
-          const canonicalLocation = {
-            latitude: lat,
-            longitude: lon,
-            displayName: rev?.displayName || `${lat.toFixed(3)}°N, ${lon.toFixed(3)}°E`,
-            name: rev?.name || 'Current Location',
-            district: rev?.district || '',
-            state: rev?.state || '',
-            country: rev?.country || 'India',
-            source: 'gps',
-          };
+          const canonicalLocation = normalizeLocation({ ...rev, latitude: lat, longitude: lon }, 'gps');
 
           setIsGpsLoading(false);
-          onSelectLocation(canonicalLocation);
+          if (canonicalLocation) {
+            onSelectLocation(canonicalLocation);
+          }
         } catch (err) {
           console.warn('Reverse geocode failed:', err);
           // Fallback to raw coords
-          const canonicalLocation = {
+          const fallbackLocation = normalizeLocation({
             latitude: pos.coords.latitude,
             longitude: pos.coords.longitude,
-            displayName: `GPS: ${pos.coords.latitude.toFixed(3)}°N, ${pos.coords.longitude.toFixed(3)}°E`,
             name: 'Current Location',
-            district: '',
-            state: '',
-            country: 'India',
-            source: 'gps',
-          };
+          }, 'gps');
           setIsGpsLoading(false);
-          onSelectLocation(canonicalLocation);
+          if (fallbackLocation) {
+            onSelectLocation(fallbackLocation);
+          }
         }
       },
       (err) => {
@@ -120,17 +185,10 @@ export default function LocationModal({ isOpen, onSelectLocation, onClose, canCl
   };
 
   const handleSelectResult = (item) => {
-    const canonical = {
-      latitude: item.latitude,
-      longitude: item.longitude,
-      displayName: item.displayName || item.name,
-      name: item.name,
-      district: item.district || '',
-      state: item.state || '',
-      country: item.country || 'India',
-      source: 'search',
-    };
-    onSelectLocation(canonical);
+    const canonical = normalizeLocation(item, 'search');
+    if (canonical) {
+      onSelectLocation(canonical);
+    }
   };
 
   if (!isOpen) return null;
@@ -227,10 +285,15 @@ export default function LocationModal({ isOpen, onSelectLocation, onClose, canCl
 
             {/* Results List */}
             <div className="space-y-1.5 max-h-60 overflow-y-auto pr-1">
-              {results.length > 0 ? (
+              {isSearching ? (
+                <div className="text-center py-6 text-stone-500 text-xs flex items-center justify-center gap-2">
+                  <span className="w-3.5 h-3.5 border-2 border-[#1E5631] border-t-transparent rounded-full animate-spin"></span>
+                  <span>{t('searching', 'Searching...')}</span>
+                </div>
+              ) : results.length > 0 ? (
                 results.map((item, idx) => (
                   <button
-                    key={`${item.latitude}-${item.longitude}-${idx}`}
+                    key={`${item.latitude || item.lat}-${item.longitude || item.lon}-${idx}`}
                     type="button"
                     onClick={() => handleSelectResult(item)}
                     className="w-full text-left p-3 rounded-xl hover:bg-stone-100 border border-transparent hover:border-stone-200 transition-all flex items-center justify-between group cursor-pointer"
@@ -240,24 +303,22 @@ export default function LocationModal({ isOpen, onSelectLocation, onClose, canCl
                         {item.name}
                       </div>
                       <div className="text-xs text-stone-500">
-                        {[item.district, item.state, item.country].filter(Boolean).join(', ')}
+                        {[item.city, item.district, item.state, item.country]
+                          .filter(Boolean)
+                          .filter((val, i, arr) => arr.indexOf(val) === i && val.toLowerCase() !== (item.name || '').toLowerCase())
+                          .join(', ') || item.country || 'India'}
                       </div>
                     </div>
                     <div className="text-right">
-                      {item.type && (
-                        <span className="text-[10px] bg-stone-100 text-stone-600 px-2 py-0.5 rounded-full capitalize border border-stone-200">
-                          {item.type}
-                        </span>
-                      )}
-                      <div className="text-[10px] text-stone-400 mt-0.5">
-                        {item.latitude.toFixed(2)}°, {item.longitude.toFixed(2)}°
+                      <div className="text-[10px] text-stone-400 font-mono">
+                        {(item.latitude ?? item.lat)?.toFixed(2)}°, {(item.longitude ?? item.lon)?.toFixed(2)}°
                       </div>
                     </div>
                   </button>
                 ))
-              ) : query.trim().length >= 2 && !isSearching ? (
+              ) : query.trim().length >= 2 ? (
                 <div className="text-center py-6 text-stone-500 text-xs">
-                  {t('noLocationsFound', 'No locations found. Try searching by district, town, or city name.')}
+                  {t('noLocationsFound', "Couldn't find that location. Try a city, village, district, or PIN code.")}
                 </div>
               ) : (
                 <div className="text-center py-4 text-[11px] text-stone-500">

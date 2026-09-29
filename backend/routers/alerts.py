@@ -27,7 +27,9 @@ async def get_alerts(
     if latitude is not None and longitude is not None:
         try:
             weather = await weather_service.get_current_and_forecast(
-                latitude=latitude, longitude=longitude
+                location=location.strip() if location and location.strip() else None,
+                latitude=latitude,
+                longitude=longitude,
             )
             return {"alerts": weather.get("warnings", [])}
         except Exception:

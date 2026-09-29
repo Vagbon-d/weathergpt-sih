@@ -34,7 +34,9 @@ async def get_weather(
     try:
         if has_coords:
             data = await weather_service.get_current_and_forecast(
-                latitude=latitude, longitude=longitude
+                location=location.strip() if has_location else None,
+                latitude=latitude,
+                longitude=longitude,
             )
         else:
             data = await weather_service.get_current_and_forecast(location=location.strip())

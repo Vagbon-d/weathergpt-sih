@@ -29,6 +29,9 @@ async function request(url, options = {}) {
     }
     return await res.json()
   } catch (err) {
+    if (err.name === 'AbortError') {
+      return { success: true, results: [] }
+    }
     if (err.name === 'TypeError' && err.message.includes('fetch')) {
       throw new Error('Could not connect to WeatherGPT backend. Please ensure the backend is running at http://localhost:8000.')
     }
@@ -39,9 +42,9 @@ async function request(url, options = {}) {
 /**
  * Search locations using Photon OpenStreetMap API biased toward India.
  */
-export async function searchLocations(query) {
-  if (!query || !query.trim()) return { results: [] }
-  return request(`${BASE_URL}/location/search?q=${encodeURIComponent(query.trim())}`)
+export async function searchLocations(query, signal) {
+  if (!query || !query.trim()) return { success: true, results: [] }
+  return request(`${BASE_URL}/location/search?q=${encodeURIComponent(query.trim())}`, { signal })
 }
 
 /**
@@ -55,24 +58,35 @@ export async function reverseGeocodeLocation(latitude, longitude) {
  * Fetch current weather and 7-day forecast.
  * Requires explicit location object or coordinates.
  */
-export async function fetchWeather(locationOrCoords) {
+export async function fetchWeather(locationOrCoords, signal) {
   if (!locationOrCoords) {
     throw new Error('Please select a location to view weather information.')
   }
 
   if (typeof locationOrCoords === 'object' && locationOrCoords !== null) {
-    const { latitude, longitude, location, displayName, name } = locationOrCoords
-    if (latitude !== undefined && latitude !== null && longitude !== undefined && longitude !== null) {
-      return request(`${BASE_URL}/weather?latitude=${encodeURIComponent(latitude)}&longitude=${encodeURIComponent(longitude)}`)
+    const { latitude, longitude, label, admin_label, weather_location, displayName, name } = locationOrCoords
+    const candidates = [label, admin_label, weather_location, displayName, name]
+    let locName = ''
+    for (const c of candidates) {
+      if (c && typeof c === 'string' && !/^\d{4,6}$/.test(c.trim())) {
+        locName = c.trim()
+        break
+      }
     }
-    const locName = displayName || name || location
+
+    if (latitude !== undefined && latitude !== null && longitude !== undefined && longitude !== null) {
+      const url = locName
+        ? `${BASE_URL}/weather?latitude=${encodeURIComponent(latitude)}&longitude=${encodeURIComponent(longitude)}&location=${encodeURIComponent(locName)}`
+        : `${BASE_URL}/weather?latitude=${encodeURIComponent(latitude)}&longitude=${encodeURIComponent(longitude)}`
+      return request(url, { signal })
+    }
     if (locName) {
-      return request(`${BASE_URL}/weather?location=${encodeURIComponent(locName)}`)
+      return request(`${BASE_URL}/weather?location=${encodeURIComponent(locName)}`, { signal })
     }
   }
 
   if (typeof locationOrCoords === 'string' && locationOrCoords.trim()) {
-    return request(`${BASE_URL}/weather?location=${encodeURIComponent(locationOrCoords.trim())}`)
+    return request(`${BASE_URL}/weather?location=${encodeURIComponent(locationOrCoords.trim())}`, { signal })
   }
 
   throw new Error('Please select a location to view weather information.')
@@ -81,21 +95,32 @@ export async function fetchWeather(locationOrCoords) {
 /**
  * Fetch active weather alerts and warnings.
  */
-export async function fetchAlerts(locationOrCoords = null) {
+export async function fetchAlerts(locationOrCoords = null, signal) {
   if (!locationOrCoords) {
-    return request(`${BASE_URL}/alerts`)
+    return request(`${BASE_URL}/alerts`, { signal })
   }
 
   if (typeof locationOrCoords === 'object' && locationOrCoords !== null) {
-    const { latitude, longitude, location, displayName } = locationOrCoords
-    if (latitude !== undefined && latitude !== null && longitude !== undefined && longitude !== null) {
-      return request(`${BASE_URL}/alerts?latitude=${encodeURIComponent(latitude)}&longitude=${encodeURIComponent(longitude)}&location=${encodeURIComponent(displayName || location || '')}`)
+    const { latitude, longitude, label, admin_label, weather_location, displayName, name } = locationOrCoords
+    const candidates = [label, admin_label, weather_location, displayName, name]
+    let locName = ''
+    for (const c of candidates) {
+      if (c && typeof c === 'string' && !/^\d{4,6}$/.test(c.trim())) {
+        locName = c.trim()
+        break
+      }
     }
-    const locName = displayName || location || ''
-    return request(`${BASE_URL}/alerts?location=${encodeURIComponent(locName)}`)
+
+    if (latitude !== undefined && latitude !== null && longitude !== undefined && longitude !== null) {
+      const url = locName
+        ? `${BASE_URL}/alerts?latitude=${encodeURIComponent(latitude)}&longitude=${encodeURIComponent(longitude)}&location=${encodeURIComponent(locName)}`
+        : `${BASE_URL}/alerts?latitude=${encodeURIComponent(latitude)}&longitude=${encodeURIComponent(longitude)}`
+      return request(url, { signal })
+    }
+    return request(`${BASE_URL}/alerts?location=${encodeURIComponent(locName)}`, { signal })
   }
 
-  return request(`${BASE_URL}/alerts?location=${encodeURIComponent(locationOrCoords)}`)
+  return request(`${BASE_URL}/alerts?location=${encodeURIComponent(locationOrCoords)}`, { signal })
 }
 
 /**
@@ -151,3 +176,66 @@ export async function synthesizeSpeech(text, language = 'en') {
   })
 }
 
+// ============================================================
+// IVR / SMS Simulator API helpers (new)
+// ============================================================
+
+/**
+ * Simulate an inbound SMS through the grounded advisory pipeline.
+ * demoMode=true returns clearly-labeled synthetic data for offline demos.
+ */
+export async function simulateSMS({
+  phone = '+919999999999',
+  message,
+  language = 'hi',
+  homeLocation = null,
+  latitude = null,
+  longitude = null,
+  demoMode = false,
+}) {
+  return request(`${BASE_URL}/webhook/sms/simulate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      phone,
+      message,
+      language,
+      home_location: homeLocation,
+      latitude,
+      longitude,
+      demo_mode: demoMode,
+    }),
+  })
+}
+
+/**
+ * Register a caller profile so they can receive proactive alerts.
+ */
+export async function registerCallerProfile({ phone, homeLocation, language = 'hi', userType = 'farmer', name = null, crop = 'Wheat', latitude = null, longitude = null }) {
+  return request(`${BASE_URL}/webhook/sms/register-caller`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      phone,
+      home_location: homeLocation,
+      language,
+      user_type: userType,
+      name,
+      crop,
+      latitude,
+      longitude,
+    }),
+  })
+}
+
+/**
+ * Trigger a proactive alert push to registered callers in a district.
+ * dryRun=true logs only, makes no real Twilio API calls.
+ */
+export async function triggerProactivePush({ district, state, location, dryRun = true }) {
+  return request(`${BASE_URL}/alerts/proactive-push`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ district, state, location, dry_run: dryRun }),
+  })
+}

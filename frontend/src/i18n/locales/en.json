@@ -91,7 +91,7 @@
   "orSearch": "Search your village, town or city",
   "searchPlaceholder": "Search village, town, city, district, PIN code…",
   "searching": "Searching locations…",
-  "noLocationsFound": "No locations found. Try searching by town, district, or city name.",
+  "noLocationsFound": "Couldn't find that location. Try a city, village, district, or PIN code.",
   "searchDisclaimer": "Search across Indian villages, towns, mandals, districts, and cities via OpenStreetMap Photon API.",
   "sessionNotice": "No default city is assumed. Your location is saved only for this session in your browser.",
   "changeLocation": "Change Location",

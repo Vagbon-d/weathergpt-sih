@@ -192,7 +192,11 @@ export default function ChatPanel({ messages, onSend, isWaiting, onRequestLocati
                     <CopyButton text={m.text} />
                   </div>
                   <div className="text-[10px] text-stone-500 flex items-center gap-1.5 ml-auto">
-                    <span>{t('sourcesAttribution', 'Sources: Open-Meteo · IMD')}</span>
+                    <span>
+                      {Array.isArray(m.sources) && m.sources.length > 0
+                        ? `${t('sourcesPrefix', 'Sources:')} ${m.sources.join(' · ')}`
+                        : (m.source ? `${t('sourcePrefix', 'Source:')} ${m.source}` : `${t('sourcesPrefix', 'Sources:')} Open-Meteo`)}
+                    </span>
                   </div>
                 </div>
               )}

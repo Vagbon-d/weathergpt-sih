@@ -1,5 +1,31 @@
 [
   {
+    "id": "IMD-CRAWL-YELLOW-0b6b03e808",
+    "source": "IMD",
+    "source_url": "https://rsmcnewdelhi.imd.gov.in/",
+    "location": "Delhi, Uttar Pradesh",
+    "district": "Delhi, Uttar Pradesh",
+    "state": "Delhi",
+    "type": "warning",
+    "category": "heavy_rainfall",
+    "hazard": "Heavy Rainfall",
+    "message": "RSMC\nToggle navigation\n-->\nA\nA\nA\nA +\nA +\nSkip to main content\nScreen Reader Access\nHome\nRSMC\nHistorical Perspective\nRSMCs - Tropical Cyclones\nActivities of RSMC, New Delhi\nBulletins & Products\nCWD\nHistorical Perspective\nPresent Organisational Structure\nBulletins & Products\nVision\nCyclone Warning Services\nMarine Weather Services\nDM Act & Guidelines\nDM Act-2005\nNDMA Guidelines-2008\nNDM Policy-2009\nNDM Plan-2019\nNMSAR Plan-2022\nSOP\nCyclone Warning Services SOP\nMarine Weather Services SOP\nCyclone an",
+    "severity": "YELLOW",
+    "issued_at": "2026-09-26T17:56:51Z",
+    "valid_from": "2026-09-26T17:56:51Z",
+    "valid_until": "Next 24-48 hours",
+    "text": "RSMC\nToggle navigation\n-->\nA\nA\nA\nA +\nA +\nSkip to main content\nScreen Reader Access\nHome\nRSMC\nHistorical Perspective\nRSMCs - Tropical Cyclones\nActivities of RSMC, New Delhi\nBulletins & Products\nCWD\nHistorical Perspective\nPresent Organisational Structure\nBulletins & Products\nVision\nCyclone Warning Services\nMarine Weather Services\nDM Act & Guidelines\nDM Act-2005\nNDMA Guidelines-2008\nNDM Policy-2009\nNDM Plan-2019\nNMSAR Plan-2022\nSOP\nCyclone Warning Services SOP\nMarine Weather Services SOP\nCyclone an",
+    "advisories": [
+      "Keep field drainage channels clear to prevent localized waterlogging in standing crops.",
+      "Postpone chemical pesticide spraying and fertilizer application until clear weather.",
+      "Fishermen are strictly advised not to venture into deep sea or coastal waters.",
+      "Provide propping support for tall crops (banana, papaya, sugarcane) to avoid lodging."
+    ],
+    "retrieved_at": "2026-09-26T17:56:51Z",
+    "confidence": 1.0,
+    "is_official": true
+  },
+  {
     "id": "IMD-CRAWL-YELLOW-8dd11570e3",
     "source": "IMD",
     "source_url": "https://rsmcnewdelhi.imd.gov.in/",
